@@ -154,6 +154,9 @@ async def _run_analysis(query, context, lang: str):
             get_order_book_spread,
             get_order_book_depth,
             get_ticker_24h,
+            get_funding_rate,
+            get_fear_greed_index,
+            get_taker_buy_pressure,
         )
         from src.indicators import check_entry_signal
         from src.news_client import get_recent_news, summarise_news
@@ -173,12 +176,33 @@ async def _run_analysis(query, context, lang: str):
             logger.warning("News fetch failed: %s", news_err)
             news_summary = {}
 
+        try:
+            funding_data = get_funding_rate(symbol)
+        except Exception as fund_err:
+            logger.warning("Funding rate fetch failed: %s", fund_err)
+            funding_data = {"ok": False}
+
+        try:
+            fg_data = get_fear_greed_index()
+        except Exception as fg_err:
+            logger.warning("Fear & Greed fetch failed: %s", fg_err)
+            fg_data = {"ok": False}
+
+        try:
+            pressure_data = get_taker_buy_pressure(symbol)
+        except Exception as pr_err:
+            logger.warning("Buy pressure fetch failed: %s", pr_err)
+            pressure_data = {"ok": False}
+
         should_enter, report = check_entry_signal(
             candles, spread, bid_depth, ask_depth, volume_24h,
             budget=cfg["budget"],
             take_profit_pct=cfg["take_profit_pct"],
             stop_loss_pct=cfg["stop_loss_pct"],
             news_summary=news_summary,
+            funding_data=funding_data,
+            fg_data=fg_data,
+            pressure_data=pressure_data,
         )
 
         ai_result = None
@@ -198,6 +222,9 @@ async def _run_analysis(query, context, lang: str):
         l5 = layers["L5_liquidity"]
         l6 = layers["L6_risk_reward"]
         l7 = layers["L7_news"]
+        l8 = layers["L8_funding"]
+        l9 = layers["L9_fear_greed"]
+        l10 = layers["L10_pressure"]
 
         def icon(key):
             return "✅" if layers[key]["pass"] else "❌"
@@ -210,6 +237,9 @@ async def _run_analysis(query, context, lang: str):
             "L5_liquidity":   t("layer_liquidity_short",   lang),
             "L6_risk_reward": t("layer_risk_reward_short", lang),
             "L7_news":        t("layer_news_short",        lang),
+            "L8_funding":     t("layer_funding_short",     lang),
+            "L9_fear_greed":  t("layer_fear_greed_short",  lang),
+            "L10_pressure":   t("layer_pressure_short",    lang),
         }
 
         # AI translation
@@ -229,31 +259,73 @@ async def _run_analysis(query, context, lang: str):
                     logger.warning("Translation skipped: %s", tr_err)
 
         # News summary text
-        if l7["skipped"] or l7.get("total", 0) == 0:
+        if l7.get("skipped") or l7.get("total", 0) == 0:
             news_str = "нет данных" if lang == "ru" else "no data"
         else:
             mood = ("📈" if l7["bullish"] > l7["bearish"] else
                     "📉" if l7["bearish"] > l7["bullish"] else "➡️")
+            b, br, n = l7["bullish"], l7["bearish"], l7["neutral"]
             if lang == "ru":
-                news_str = f"{mood} +{l7['bullish']}б -{l7['bearish']}м {l7['neutral']}н"
+                news_str = f"{mood} +{b}б -{br}м {n}н"
             else:
-                news_str = f"{mood} +{l7['bullish']}b -{l7['bearish']}br {l7['neutral']}n"
+                news_str = f"{mood} +{b}b -{br}br {n}n"
+
+        # Funding rate text
+        if l8.get("skipped"):
+            funding_str = "N/A (spot)"
+        else:
+            fr = l8.get("funding_rate", 0.0)
+            oi = l8.get("oi_change_pct", 0.0)
+            funding_str = f"FR {fr:+.3f}%  OI {oi:+.1f}%"
+
+        # Fear & Greed text
+        if l9.get("skipped"):
+            fg_str = "N/A"
+        else:
+            fg_val = l9.get("value", 50)
+            fg_cls = l9.get("classification", "")
+            fg_chg = l9.get("change", 0)
+            chg_sign = "+" if fg_chg >= 0 else ""
+            fg_str = f"{fg_val}/100 {fg_cls} ({chg_sign}{fg_chg})"
+
+        # Buy/Sell pressure text
+        if l10.get("skipped"):
+            pressure_str = "N/A"
+        else:
+            ratio = l10.get("buy_ratio_pct", 50.0)
+            net = l10.get("net_btc", 0.0)
+            trend_icon = (
+                "📈" if l10.get("trend") == "bullish" else
+                "📉" if l10.get("trend") == "bearish" else "➡️"
+            )
+            pressure_str = (
+                f"{trend_icon} {ratio:.1f}% buy  net {net:+,.0f} BTC"
+            )
 
         layer_data = [
             ("L1_volatility",  t("layer_volatility_short",  lang),
              f"ATR ${l1['atr']:,.0f}  ADX {l1['adx']:.0f}"),
             ("L2_trend",       t("layer_trend_short",       lang),
-             f"EMA50 ${l2.get('ema50', 0):,.0f}  EMA200 ${l2.get('ema200', 0):,.0f}"),
+             f"EMA50 ${l2.get('ema50', 0):,.0f}  "
+             f"EMA200 ${l2.get('ema200', 0):,.0f}"),
             ("L3_momentum",    t("layer_momentum_short",    lang),
              f"RSI {l3['rsi']:.1f}  MACD {l3['macd_hist']:+.1f}"),
             ("L4_timing",      t("layer_timing_short",      lang),
              f"{l4['weekday']} {l4['hour_utc']:02d}:00 UTC"),
             ("L5_liquidity",   t("layer_liquidity_short",   lang),
-             ("спред" if lang == "ru" else "spread") + f" ${l5['spread']:.2f}"),
+             ("спред" if lang == "ru" else "spread")
+             + f" ${l5['spread']:.2f}"),
             ("L6_risk_reward", t("layer_risk_reward_short", lang),
-             f"+${l6['net_profit']:.2f} / -${l6['net_loss']:.2f}  RR {l6['rr_ratio']:.2f}"),
+             f"+${l6['net_profit']:.2f} / -${l6['net_loss']:.2f}"
+             f"  RR {l6['rr_ratio']:.2f}"),
             ("L7_news",        t("layer_news_short",        lang),
              news_str),
+            ("L8_funding",     t("layer_funding_short",     lang),
+             funding_str),
+            ("L9_fear_greed",  t("layer_fear_greed_short",  lang),
+             fg_str),
+            ("L10_pressure",   t("layer_pressure_short",    lang),
+             pressure_str),
         ]
 
         ai_verdict_icon = "🟢" if ai_verdict == "ENTER" else "🔴"

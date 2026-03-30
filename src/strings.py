@@ -10,12 +10,12 @@ STRINGS = {
     "hello": {
         "en": (
             "👋 Hello, {name}!\n\n"
-            "🤖 I analyse the market across *7 decision layers*.\n"
+            "🤖 I analyse the market across *10 decision layers*.\n"
             "Choose a token to analyse:"
         ),
         "ru": (
             "👋 Привет, {name}!\n\n"
-            "🤖 Я анализирую рынок по *7 уровням принятия решений*.\n"
+            "🤖 Я анализирую рынок по *10 уровням принятия решений*.\n"
             "Выбери токен для анализа:"
         ),
     },
@@ -221,14 +221,29 @@ STRINGS = {
         "en": "News      ",
         "ru": "Новости   ",
     },
+    "layer_funding": {
+        "en": "Funding   ",
+        "ru": "Фандинг   ",
+    },
+    "layer_fear_greed": {
+        "en": "Fear/Greed",
+        "ru": "Страх/Жад.",
+    },
+    "layer_pressure": {
+        "en": "Buy/Sell  ",
+        "ru": "Давление  ",
+    },
     # Short names used in "failed layers" list
-    "layer_volatility_short": {"en": "Volatility", "ru": "Волатильность"},
-    "layer_trend_short":      {"en": "Trend",      "ru": "Тренд"},
-    "layer_momentum_short":   {"en": "Momentum",   "ru": "Импульс"},
-    "layer_timing_short":     {"en": "Timing",     "ru": "Тайминг"},
-    "layer_liquidity_short":  {"en": "Liquidity",  "ru": "Ликвидность"},
-    "layer_risk_reward_short": {"en": "Risk/Reward", "ru": "Риск/Доход"},
-    "layer_news_short":       {"en": "News",       "ru": "Новости"},
+    "layer_volatility_short":  {"en": "Volatility",   "ru": "Волатильность"},
+    "layer_trend_short":       {"en": "Trend",         "ru": "Тренд"},
+    "layer_momentum_short":    {"en": "Momentum",      "ru": "Импульс"},
+    "layer_timing_short":      {"en": "Timing",        "ru": "Тайминг"},
+    "layer_liquidity_short":   {"en": "Liquidity",     "ru": "Ликвидность"},
+    "layer_risk_reward_short": {"en": "Risk/Reward",   "ru": "Риск/Доход"},
+    "layer_news_short":        {"en": "News",          "ru": "Новости"},
+    "layer_funding_short":     {"en": "Funding Rate",  "ru": "Фандинг"},
+    "layer_fear_greed_short":  {"en": "Fear & Greed",  "ru": "Страх/Жадность"},
+    "layer_pressure_short":    {"en": "Buy Pressure",  "ru": "Давление"},
     "signal_enter": {
         "en": "🚀 *SIGNAL: ENTER — all layers passed!*",
         "ru": "🚀 *СИГНАЛ: ВХОД — все уровни пройдены!*",

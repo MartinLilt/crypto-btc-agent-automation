@@ -447,7 +447,6 @@ def check_risk_reward(
 
 
 # ── Layer 7: News Sentiment ───────────────────────────────────────────────────
-
 def check_news_sentiment(news_summary: dict) -> tuple[bool, dict]:
     """
     Layer 7 — Recent news sentiment for the asset.
@@ -494,7 +493,156 @@ def check_news_sentiment(news_summary: dict) -> tuple[bool, dict]:
     }
 
 
-# ── Entry Signal (all 7 layers) ───────────────────────────────────────────────
+# ── Layer 8: Funding Rate + Open Interest ────────────────────────────────────
+
+# If funding rate > this threshold → longs overheated → skip entry
+FUNDING_RATE_MAX = 0.05    # %  (0.05% is considered overheated)
+# If funding rate < this → extreme short squeeze risk → also skip
+FUNDING_RATE_MIN = -0.05   # %
+# OI must be growing (or flat) — OI shrinking means positions closing
+OI_CHANGE_MIN = -3.0       # % — allow up to -3% OI drop before failing
+
+
+def check_funding_rate(funding_data: dict) -> tuple[bool, dict]:
+    """
+    Layer 8 — Futures market health check.
+
+    Funding rate reflects who is paying whom between longs and shorts.
+    - Positive funding: longs pay shorts → longs are overheated
+    - Very positive (> +0.05%): SKIP — squeeze risk downward
+    - Very negative (< -0.05%): SKIP — market in panic, unstable
+    - Open interest change < -3%: positions closing → liquidity leaving
+
+    If Binance Futures data unavailable → pass (spot-only asset fallback).
+    """
+    if not funding_data.get("ok", False):
+        # Can't reach futures API (e.g. LINK has no futures) → neutral pass
+        return True, {
+            "funding_rate": 0.0,
+            "oi_change_pct": 0.0,
+            "funding_ok": True,
+            "oi_ok": True,
+            "skipped": True,
+        }
+
+    fr = funding_data["funding_rate"]
+    oi_chg = funding_data["oi_change_pct"]
+
+    funding_ok = FUNDING_RATE_MIN <= fr <= FUNDING_RATE_MAX
+    oi_ok = oi_chg >= OI_CHANGE_MIN
+
+    signal = funding_ok and oi_ok
+
+    return signal, {
+        "funding_rate": fr,
+        "open_interest": funding_data.get("open_interest", 0),
+        "oi_change_pct": oi_chg,
+        "funding_ok": funding_ok,
+        "oi_ok": oi_ok,
+        "skipped": False,
+    }
+
+
+# ── Layer 9: Fear & Greed Index ───────────────────────────────────────────────
+
+# Extreme Greed → risky to enter (everyone already in)
+FG_MAX = 74        # above this: Extreme Greed → skip
+# Extreme Fear → good buy zone (contrarian), but only if improving
+FG_MIN = 15        # below this: Extreme Fear → skip (panic, no floor)
+# Improvement threshold: if changing from bad → acceptable direction
+FG_IMPROVING_MIN = -5  # allow if index dropped but not more than 5 pts
+
+
+def check_fear_greed(fg_data: dict) -> tuple[bool, dict]:
+    """
+    Layer 9 — Market sentiment via Fear & Greed Index (0-100).
+
+    Source: alternative.me/fng (free, no API key)
+
+    Pass zones:
+      - 15–74: healthy zone (Fear to Greed) → OK to enter
+      - Below 15: Extreme Fear → panic, no clear floor → SKIP
+      - Above 74: Extreme Greed → overheated → SKIP
+
+    If API unavailable → neutral pass (don't block analysis).
+    """
+    if not fg_data.get("ok", False):
+        return True, {
+            "value": 50,
+            "classification": "Neutral",
+            "change": 0,
+            "fg_ok": True,
+            "skipped": True,
+        }
+
+    value = fg_data["value"]
+    change = fg_data.get("change", 0)
+
+    fg_ok = FG_MIN <= value <= FG_MAX
+
+    return fg_ok, {
+        "value": value,
+        "classification": fg_data.get("classification", ""),
+        "change": change,
+        "fg_ok": fg_ok,
+        "skipped": False,
+    }
+
+
+# ── Layer 10: Buy/Sell Pressure (Taker Volume Netflow) ───────────────────────
+
+# Minimum buy ratio to confirm buying pressure
+BUY_RATIO_MIN = 45.0     # % — below this sellers dominate → skip
+# Net BTC must not be too negative (heavy selling)
+NET_SELL_MAX = -500.0    # BTC — if sellers dumped >500 BTC net → skip
+
+
+def check_buy_pressure(pressure_data: dict) -> tuple[bool, dict]:
+    """
+    Layer 10 — Exchange Buy/Sell Pressure via Binance Taker Volume.
+
+    Taker buy volume = market buy orders (aggressive buyers).
+    When buyers dominate (ratio > 55%) → accumulation → bullish.
+    When sellers dominate (ratio < 45%) → distribution → bearish.
+
+    Pass conditions:
+      - Buy ratio >= 45% (sellers not overwhelming)
+      - Net BTC not below -500 BTC (no extreme sell dump in 24h)
+
+    If data unavailable → neutral pass.
+    """
+    if not pressure_data.get("ok", False):
+        return True, {
+            "buy_ratio_pct": 50.0,
+            "net_btc": 0.0,
+            "trend": "neutral",
+            "ratio_ok": True,
+            "net_ok": True,
+            "skipped": True,
+        }
+
+    ratio = pressure_data["buy_ratio_pct"]
+    net = pressure_data["net_btc"]
+
+    ratio_ok = ratio >= BUY_RATIO_MIN
+    net_ok = net >= NET_SELL_MAX
+
+    signal = ratio_ok and net_ok
+
+    return signal, {
+        "buy_btc": pressure_data.get("buy_btc", 0.0),
+        "sell_btc": pressure_data.get("sell_btc", 0.0),
+        "net_btc": net,
+        "buy_ratio_pct": ratio,
+        "trend": pressure_data.get("trend", "neutral"),
+        "hours": pressure_data.get("hours", 24),
+        "ratio_ok": ratio_ok,
+        "net_ok": net_ok,
+        "skipped": False,
+    }
+
+
+# ── Entry Signal (all 10 layers) ──────────────────────────────────────────────
 
 def check_entry_signal(
     candles: list,
@@ -506,21 +654,14 @@ def check_entry_signal(
     take_profit_pct: float = 2.0,
     stop_loss_pct: float = 1.0,
     news_summary: dict | None = None,
+    funding_data: dict | None = None,
+    fg_data: dict | None = None,
+    pressure_data: dict | None = None,
 ) -> tuple[bool, dict]:
     """
-    Run all 7 entry decision layers.
+    Run all 10 entry decision layers.
     Returns (should_enter, report_dict).
-    All 7 layers must pass for should_enter = True.
-
-    candles:         201+ hourly OHLCV candles → get_candles(limit=201)
-    spread:          bid/ask spread            → get_order_book_spread()
-    bid_depth:       BTC depth on bid side     → get_order_book_depth()
-    ask_depth:       BTC depth on ask side     → get_order_book_depth()
-    volume_24h:      24h volume in USD         → get_ticker_24h()["volume_usd"]
-    budget:          USDT per position         → cfg["budget"]
-    take_profit_pct: TP %                      → cfg["take_profit_pct"]
-    stop_loss_pct:   SL %                      → cfg["stop_loss_pct"]
-    news_summary:    output of summarise_news()→ src.news_client
+    All 10 layers must pass for should_enter = True.
     """
     l1_ok, l1 = is_market_moving(candles)
     l2_ok, l2 = is_uptrend(candles)
@@ -529,19 +670,28 @@ def check_entry_signal(
     l5_ok, l5 = has_liquidity(spread, bid_depth, ask_depth, volume_24h)
     l6_ok, l6 = check_risk_reward(budget, take_profit_pct, stop_loss_pct)
     l7_ok, l7 = check_news_sentiment(news_summary or {})
+    l8_ok, l8 = check_funding_rate(funding_data or {})
+    l9_ok, l9 = check_fear_greed(fg_data or {})
+    l10_ok, l10 = check_buy_pressure(pressure_data or {})
 
-    should_enter = all([l1_ok, l2_ok, l3_ok, l4_ok, l5_ok, l6_ok, l7_ok])
+    should_enter = all([
+        l1_ok, l2_ok, l3_ok, l4_ok, l5_ok,
+        l6_ok, l7_ok, l8_ok, l9_ok, l10_ok,
+    ])
 
     report = {
         "should_enter": should_enter,
         "layers": {
-            "L1_volatility":  {"pass": l1_ok, **l1},
-            "L2_trend":       {"pass": l2_ok, **l2},
-            "L3_momentum":    {"pass": l3_ok, **l3},
-            "L4_timing":      {"pass": l4_ok, **l4},
-            "L5_liquidity":   {"pass": l5_ok, **l5},
-            "L6_risk_reward": {"pass": l6_ok, **l6},
-            "L7_news":        {"pass": l7_ok, **l7},
+            "L1_volatility":  {"pass": l1_ok,  **l1},
+            "L2_trend":       {"pass": l2_ok,  **l2},
+            "L3_momentum":    {"pass": l3_ok,  **l3},
+            "L4_timing":      {"pass": l4_ok,  **l4},
+            "L5_liquidity":   {"pass": l5_ok,  **l5},
+            "L6_risk_reward": {"pass": l6_ok,  **l6},
+            "L7_news":        {"pass": l7_ok,  **l7},
+            "L8_funding":     {"pass": l8_ok,  **l8},
+            "L9_fear_greed":  {"pass": l9_ok,  **l9},
+            "L10_pressure":   {"pass": l10_ok, **l10},
         },
     }
     return should_enter, report

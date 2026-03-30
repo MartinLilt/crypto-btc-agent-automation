@@ -1,4 +1,5 @@
 import os
+import requests
 from binance.client import Client
 from dotenv import load_dotenv
 
@@ -76,3 +77,146 @@ def get_ticker_24h(symbol="BTCUSDT") -> dict:
         "volume_usd":       round(float(t["quoteVolume"]), 0),
         "price_change_pct": round(float(t["priceChangePercent"]), 2),
     }
+
+
+def get_funding_rate(symbol="BTCUSDT") -> dict:
+    """
+    Fetch current funding rate and open interest from Binance Futures.
+    Funding rate > +0.05% means longs are overheated (bearish signal).
+    Funding rate < -0.05% means shorts are overheated (bullish signal).
+    Returns dict with funding_rate (%), open_interest_usd, oi_change_pct.
+    """
+    base = "https://fapi.binance.com"
+    try:
+        # Current funding rate
+        fr_resp = requests.get(
+            f"{base}/fapi/v1/fundingRate",
+            params={"symbol": symbol, "limit": 3},
+            timeout=5,
+        )
+        fr_data = fr_resp.json()
+        if not fr_data or isinstance(fr_data, dict):
+            funding_rate = 0.0
+        else:
+            funding_rate = float(fr_data[-1]["fundingRate"]) * 100  # convert to %
+
+        # Current open interest
+        oi_resp = requests.get(
+            f"{base}/fapi/v1/openInterest",
+            params={"symbol": symbol},
+            timeout=5,
+        )
+        oi_data = oi_resp.json()
+        open_interest = float(oi_data.get("openInterest", 0))
+
+        # Historical OI (last 2 periods = ~16h) to compute change
+        oi_hist_resp = requests.get(
+            f"{base}/futures/data/openInterestHist",
+            params={"symbol": symbol, "period": "1h", "limit": 8},
+            timeout=5,
+        )
+        oi_hist = oi_hist_resp.json()
+        if isinstance(oi_hist, list) and len(oi_hist) >= 2:
+            oi_old = float(oi_hist[0]["sumOpenInterest"])
+            oi_new = float(oi_hist[-1]["sumOpenInterest"])
+            oi_change_pct = round((oi_new - oi_old) / oi_old * 100, 2) if oi_old else 0.0
+        else:
+            oi_change_pct = 0.0
+
+        return {
+            "funding_rate": round(funding_rate, 4),
+            "open_interest": round(open_interest, 2),
+            "oi_change_pct": oi_change_pct,
+            "ok": True,
+        }
+    except Exception as e:
+        return {"funding_rate": 0.0, "open_interest": 0.0, "oi_change_pct": 0.0, "ok": False, "error": str(e)}
+
+
+def get_fear_greed_index() -> dict:
+    """
+    Fetch the Crypto Fear & Greed Index from alternative.me (no API key needed).
+    Returns dict with value (0-100) and classification string.
+    Extreme Fear (0-25): market oversold, good entry opportunity.
+    Extreme Greed (75-100): market overheated, risky entry.
+    """
+    try:
+        resp = requests.get(
+            "https://api.alternative.me/fng/?limit=2",
+            timeout=5,
+        )
+        data = resp.json()
+        items = data.get("data", [])
+        if not items:
+            return {"value": 50, "classification": "Neutral", "ok": False}
+
+        current = items[0]
+        previous = items[1] if len(items) > 1 else items[0]
+        value = int(current["value"])
+        prev_value = int(previous["value"])
+
+        return {
+            "value": value,
+            "classification": current["value_classification"],
+            "prev_value": prev_value,
+            "change": value - prev_value,
+            "ok": True,
+        }
+    except Exception as e:
+        return {"value": 50, "classification": "Neutral", "prev_value": 50, "change": 0, "ok": False, "error": str(e)}
+
+
+def get_taker_buy_pressure(symbol="BTCUSDT", hours=24) -> dict:
+    """
+    Exchange Buy/Sell Pressure via Binance Taker Volume (free, no key needed).
+
+    Uses kline field [9] = Taker Buy Base Volume — the volume of trades
+    where the buyer was the aggressor (market buy orders).
+    Sell pressure = Total volume - Taker buy volume.
+
+    This is the best free proxy for exchange netflow:
+      - Buy ratio > 55%: buyers dominate → bullish pressure
+      - Buy ratio < 45%: sellers dominate → bearish pressure
+      - 45–55%: balanced market
+
+    Returns dict with buy_btc, sell_btc, net_btc, buy_ratio_pct, trend.
+    """
+    try:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": "1h", "limit": hours},
+            timeout=5,
+        )
+        klines = resp.json()
+        if not klines or not isinstance(klines, list):
+            return {"ok": False, "buy_ratio_pct": 50.0}
+
+        total_buy = sum(float(k[9]) for k in klines)   # taker buy BTC
+        total_vol = sum(float(k[5]) for k in klines)   # total volume BTC
+        total_sell = total_vol - total_buy
+
+        buy_ratio = (total_buy / total_vol * 100) if total_vol > 0 else 50.0
+        net_btc = total_buy - total_sell
+
+        if buy_ratio > 55:
+            trend = "bullish"
+        elif buy_ratio < 45:
+            trend = "bearish"
+        else:
+            trend = "neutral"
+
+        return {
+            "buy_btc": round(total_buy, 2),
+            "sell_btc": round(total_sell, 2),
+            "net_btc": round(net_btc, 2),
+            "buy_ratio_pct": round(buy_ratio, 1),
+            "trend": trend,
+            "hours": hours,
+            "ok": True,
+        }
+    except Exception as e:
+        return {
+            "buy_btc": 0.0, "sell_btc": 0.0, "net_btc": 0.0,
+            "buy_ratio_pct": 50.0, "trend": "neutral",
+            "hours": hours, "ok": False, "error": str(e),
+        }

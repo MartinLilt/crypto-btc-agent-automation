@@ -36,7 +36,7 @@ def _get_client() -> OpenAI:
 SYSTEM_PROMPT = """You are a professional but friendly trading assistant \
 explaining market conditions to a regular person who is not a trader.
 
-You receive a technical market analysis report with 7 layers of signals. \
+You receive a technical market analysis report with 10 layers of signals. \
 For each layer write ONE short plain-English sentence that explains \
 what is happening and whether it is good or bad for entering a trade right now. \
 Then write a brief conclusion with the overall verdict.
@@ -60,7 +60,10 @@ Respond ONLY with valid JSON in this exact format:
     "✅ or ❌ One sentence about timing.",
     "✅ or ❌ One sentence about liquidity.",
     "✅ or ❌ One sentence about risk/reward and fees.",
-    "✅ or ❌ One sentence about recent news sentiment."
+    "✅ or ❌ One sentence about recent news sentiment.",
+    "✅ or ❌ One sentence about futures funding rate and open interest.",
+    "✅ or ❌ One sentence about the Fear & Greed index and market mood.",
+    "✅ or ❌ One sentence about buyer vs seller pressure in the last 24h."
   ],
   "conclusion": "1-2 sentence overall verdict and what to watch for next."
 }"""
@@ -75,6 +78,9 @@ def _build_user_message(symbol: str, price: float, report: dict) -> str:
     l5 = layers["L5_liquidity"]
     l6 = layers["L6_risk_reward"]
     l7 = layers.get("L7_news", {})
+    l8 = layers.get("L8_funding", {})
+    l9 = layers.get("L9_fear_greed", {})
+    l10 = layers.get("L10_pressure", {})
 
     asset_name = "Bitcoin" if "BTC" in symbol else "Ethereum"
     price_vs_short = l2.get("ema50", 0)
@@ -157,7 +163,10 @@ def _build_user_message(symbol: str, price: float, report: dict) -> str:
 
     # L7 — News sentiment
     if l7.get("skipped") or l7.get("total", 0) == 0:
-        news_desc = "no recent news found — neutral stance, cannot confirm macro context"
+        news_desc = (
+            "no recent news found — neutral stance, "
+            "cannot confirm macro context"
+        )
     else:
         total = l7["total"]
         bullish = l7.get("bullish", 0)
@@ -179,8 +188,57 @@ def _build_user_message(symbol: str, price: float, report: dict) -> str:
                 f'"{h[:60]}"' for h in headlines[:2]
             )
 
+    # L8 — Funding rate + Open Interest
+    if l8.get("skipped", False):
+        funding_desc = (
+            "futures data unavailable for this asset — "
+            "spot market only, no funding pressure"
+        )
+    else:
+        fr = l8.get("funding_rate", 0.0)
+        oi_chg = l8.get("oi_change_pct", 0.0)
+        fr_mood = (
+            "neutral" if -0.02 < fr < 0.02
+            else "longs overheated — squeeze risk" if fr > 0.02
+            else "shorts overheated — potential short squeeze"
+        )
+        funding_desc = (
+            f"funding rate is {fr:+.3f}% ({fr_mood}), "
+            f"open interest changed {oi_chg:+.1f}% recently"
+        )
+
+    # L9 — Fear & Greed Index
+    if l9.get("skipped", False):
+        fg_desc = "Fear & Greed index unavailable — assuming neutral market mood"
+    else:
+        fg_val = l9.get("value", 50)
+        fg_class = l9.get("classification", "Neutral")
+        fg_chg = l9.get("change", 0)
+        direction = "improving" if fg_chg > 0 else "worsening" if fg_chg < 0 else "stable"
+        fg_desc = (
+            f"Fear & Greed is {fg_val}/100 ({fg_class}), "
+            f"{direction} by {abs(fg_chg)} points vs yesterday"
+        )
+
+    # L10 — Buy/Sell pressure
+    if l10.get("skipped", False):
+        pressure_desc = (
+            "buy/sell pressure data unavailable — cannot assess "
+            "taker flow"
+        )
+    else:
+        ratio = l10.get("buy_ratio_pct", 50.0)
+        net = l10.get("net_btc", 0.0)
+        trend = l10.get("trend", "neutral")
+        hours = l10.get("hours", 24)
+        pressure_desc = (
+            f"in the last {hours}h, buyers made up {ratio:.1f}% of volume "
+            f"({trend}) — net {net:+,.0f} BTC taker flow"
+        )
+
     passed = sum(
-        1 for v in [l1, l2, l3, l4, l5, l6, l7] if v.get("pass")
+        1 for v in [l1, l2, l3, l4, l5, l6, l7, l8, l9, l10]
+        if v.get("pass")
     )
 
     return f"""Asset: {asset_name} ({symbol})
@@ -190,7 +248,7 @@ Take-profit at: +{l6['take_profit_pct']}%  →  gross +${l6['gross_profit']:.2f}
 Stop-loss at:   -{l6['stop_loss_pct']}%   →  gross -${l6['gross_loss']:.2f}
 Exchange fees:  ${l6['total_fee']:.2f} (0.1% each side)
 
-Here is what the 7 analysis checks found:
+Here is what the 10 analysis checks found:
 
 1. Market activity: {vol_desc}
 2. Price trend: {asset_name} is currently {trend_desc}
@@ -199,8 +257,11 @@ Here is what the 7 analysis checks found:
 5. Liquidity: {liquidity_desc}
 6. Risk/Reward: {rr_desc}
 7. News sentiment: {news_desc}
+8. Futures market: {funding_desc}
+9. Market mood: {fg_desc}
+10. Buy/Sell pressure: {pressure_desc}
 
-Overall: {passed} out of 7 checks passed.
+Overall: {passed} out of 10 checks passed.
 System recommendation: {"ENTER" if report["should_enter"] else "WAIT"}
 
 Please write a short, plain-English verdict for a regular person."""
