@@ -198,7 +198,9 @@ def _eval_bar(candles_window: list, ts_ms: int,
         # Re-check without the hard USD ATR floor (BTC-only threshold)
         atr_expanding = l1.get("atr_expanding", False)
         volume_spike = l1.get("volume_spike", False)
-        adx_ok = (l1.get("adx") or 0) > 20   # relaxed: 20 vs 25
+        # LTC has structurally lower ADX — relax to 15 (vs 20 for others)
+        adx_min = 15 if symbol == "LTCUSDT" else 20
+        adx_ok = (l1.get("adx") or 0) > adx_min
         l1_pass = atr_expanding and volume_spike and adx_ok
         l1["relative_override"] = l1_pass
 
@@ -233,8 +235,9 @@ def _eval_bar(candles_window: list, ts_ms: int,
     volume_24h = sum(
         c["volume"] * c["close"] for c in candles_window[-24:]
     )
-    # Use relative volume threshold: 30M USD — covers top-100 altcoins
-    MIN_VOL = 30_000_000
+    # Use relative volume threshold.
+    # LTC trades ~$10-20M/day — use $10M floor; all others $30M.
+    MIN_VOL = 10_000_000 if symbol == "LTCUSDT" else 30_000_000
     spread_ok = max(approx_spread, 0.01) / last["close"] < 0.005  # <0.5%
     vol_ok = volume_24h >= MIN_VOL
     l5_pass = spread_ok and vol_ok
