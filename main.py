@@ -534,7 +534,8 @@ def _build_market_context(symbol: str, result: dict, lang: str) -> str:
         if len(candles) > WIN:
             window = candles[-WIN - 1:]
             fg = _fetch_fear_greed_history()
-            snap_sig, snap = _eval_bar(window, 0, fg, [], 2.0, 1.0, 0.001, symbol)
+            snap_sig, snap = _eval_bar(
+                window, 0, fg, [], 2.0, 1.0, 0.001, symbol)
         else:
             return "_(not enough data)_" if lang == "en" else "_(недостаточно данных)_"
     except Exception:
@@ -544,11 +545,11 @@ def _build_market_context(symbol: str, result: dict, lang: str) -> str:
     l2 = snap.get("l2", {})
     l5 = snap.get("l5", {})
 
-    adx   = l1.get("adx", 0)
+    adx = l1.get("adx", 0)
     price = l2.get("price", 0)
     ema50 = l2.get("ema50", 0)
     vol24 = l5.get("volume_24h_usd", 0)
-    atr   = l1.get("atr", 0)
+    atr = l1.get("atr", 0)
 
     # Trend label
     if price > ema50 and l2.get("ema50_slope_ok"):
