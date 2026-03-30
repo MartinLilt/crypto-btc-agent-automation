@@ -10,6 +10,11 @@ client = Client(
     api_secret=os.getenv("BINANCE_API_SECRET")
 )
 
+# URLs from .env (with sensible defaults so the bot works even without them)
+_BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
+_BINANCE_FUTURES = os.getenv("BINANCE_FUTURES_URL", "https://fapi.binance.com")
+_FEAR_GREED_URL = os.getenv("FEAR_GREED_URL", "https://api.alternative.me/fng/?limit=2")
+
 
 def get_candles(symbol="BTCUSDT", interval="1h", limit=15):
     """Fetch last N hourly candles from Binance (OHLCV)"""
@@ -86,7 +91,7 @@ def get_funding_rate(symbol="BTCUSDT") -> dict:
     Funding rate < -0.05% means shorts are overheated (bullish signal).
     Returns dict with funding_rate (%), open_interest_usd, oi_change_pct.
     """
-    base = "https://fapi.binance.com"
+    base = _BINANCE_FUTURES
     try:
         # Current funding rate
         fr_resp = requests.get(
@@ -98,7 +103,8 @@ def get_funding_rate(symbol="BTCUSDT") -> dict:
         if not fr_data or isinstance(fr_data, dict):
             funding_rate = 0.0
         else:
-            funding_rate = float(fr_data[-1]["fundingRate"]) * 100  # convert to %
+            funding_rate = float(
+                fr_data[-1]["fundingRate"]) * 100  # convert to %
 
         # Current open interest
         oi_resp = requests.get(
@@ -119,7 +125,8 @@ def get_funding_rate(symbol="BTCUSDT") -> dict:
         if isinstance(oi_hist, list) and len(oi_hist) >= 2:
             oi_old = float(oi_hist[0]["sumOpenInterest"])
             oi_new = float(oi_hist[-1]["sumOpenInterest"])
-            oi_change_pct = round((oi_new - oi_old) / oi_old * 100, 2) if oi_old else 0.0
+            oi_change_pct = round((oi_new - oi_old) /
+                                  oi_old * 100, 2) if oi_old else 0.0
         else:
             oi_change_pct = 0.0
 
@@ -142,7 +149,7 @@ def get_fear_greed_index() -> dict:
     """
     try:
         resp = requests.get(
-            "https://api.alternative.me/fng/?limit=2",
+            _FEAR_GREED_URL,
             timeout=5,
         )
         data = resp.json()
@@ -183,7 +190,7 @@ def get_taker_buy_pressure(symbol="BTCUSDT", hours=24) -> dict:
     """
     try:
         resp = requests.get(
-            "https://api.binance.com/api/v3/klines",
+            f"{_BINANCE_REST}/api/v3/klines",
             params={"symbol": symbol, "interval": "1h", "limit": hours},
             timeout=5,
         )

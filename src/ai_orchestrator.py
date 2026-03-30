@@ -7,6 +7,7 @@ GPT acts as a senior trader reviewing the analyst's report.
 """
 
 import os
+import re
 import json
 import logging
 from openai import OpenAI
@@ -309,13 +310,17 @@ def translate_to_russian(points: list, conclusion: str) -> tuple:
         line = line.strip()
         if not line:
             continue
-        if line.upper().startswith("ВЫВОД:") or line.upper().startswith("ВЫВОД "):
+        upper = line.upper()
+        if upper.startswith("ВЫВОД:") or upper.startswith("ВЫВОД "):
             tr_conclusion = line.split(":", 1)[-1].strip()
-        elif line[0].isdigit() and line[1:3] in (". ", ") "):
-            tr_points.append(line[3:].strip())
+            continue
+        # Match numbered lines: "1. ", "2. ", ..., "10. ", "1) " etc.
+        m = re.match(r"^(\d{1,2})[.)]\s+(.+)$", line)
+        if m:
+            tr_points.append(m.group(2).strip())
         else:
-            # fallback — just append
-            if len(tr_points) < 5:
+            # fallback — append non-empty non-header lines
+            if len(tr_points) < len(points):
                 tr_points.append(line)
 
     # Pad if translation came back short
