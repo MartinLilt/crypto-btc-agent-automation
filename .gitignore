@@ -13,8 +13,9 @@ venv/
 .venv/
 
 # Logs & runtime data
-logs/
+logs/*.log
 data/*.db
+data/*.json
 *.log
 
 # OS / editor
