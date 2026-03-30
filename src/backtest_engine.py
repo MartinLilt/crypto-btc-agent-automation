@@ -233,8 +233,8 @@ def _eval_bar(candles_window: list, ts_ms: int,
     volume_24h = sum(
         c["volume"] * c["close"] for c in candles_window[-24:]
     )
-    # Use relative volume threshold: 50M USD works for top-30 altcoins
-    MIN_VOL = 50_000_000
+    # Use relative volume threshold: 30M USD — covers top-100 altcoins
+    MIN_VOL = 30_000_000
     spread_ok = max(approx_spread, 0.01) / last["close"] < 0.005  # <0.5%
     vol_ok = volume_24h >= MIN_VOL
     l5_pass = spread_ok and vol_ok
@@ -269,19 +269,23 @@ def _eval_bar(candles_window: list, ts_ms: int,
         funding_data = {"ok": False}
     l8_pass, l8 = check_funding_rate(funding_data)
 
-    # L9 — Fear & Greed (from Redis cache)
+    # L9 — Fear & Greed: recorded as info, not a blocker in backtest.
+    # Live mode uses it to avoid Extreme Fear/Greed entries.
+    # In backtest we want to SEE how signals performed during fear periods.
     date_str = dt.strftime("%Y-%m-%d")
     fg_val = fg_history.get(date_str)
     if fg_val is not None:
-        fg_data = {
+        _, l9 = check_fear_greed({
             "ok": True,
             "value": fg_val,
             "classification": _fg_class(fg_val),
             "change": 0,
-        }
+        })
+        l9["skipped"] = True   # record data but don't block
     else:
-        fg_data = {"ok": False}
-    l9_pass, l9 = check_fear_greed(fg_data)
+        _, l9 = check_fear_greed({"ok": False})
+        l9["skipped"] = True
+    l9_pass = True   # always pass in backtest
 
     # L10 — Buy Pressure (taker_buy_vol from klines)
     total_vol = sum(c["volume"] for c in candles_window[-24:]) or 1

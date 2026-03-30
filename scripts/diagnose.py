@@ -15,16 +15,6 @@ Usage:
     python3 scripts/diagnose.py
 """
 
-import os
-import sys
-import time
-
-import requests
-from dotenv import load_dotenv
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-load_dotenv()
-
 from src.indicators import (
     GOOD_HOURS_UTC,
     SKIP_WEEKDAYS,
@@ -36,13 +26,24 @@ from src.indicators import (
     is_not_overbought,
     is_uptrend,
 )
+import os
+import sys
+import time
+
+import requests
+from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+load_dotenv()
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-BINANCE_REST    = os.getenv("BINANCE_REST_URL",     "https://api.binance.com")
+BINANCE_REST = os.getenv("BINANCE_REST_URL",     "https://api.binance.com")
 BINANCE_FUTURES = os.getenv("BINANCE_FUTURES_URL",  "https://fapi.binance.com")
-FEAR_GREED_URL  = os.getenv("FEAR_GREED_URL",       "https://api.alternative.me/fng/")
-TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN", "")
+FEAR_GREED_URL = os.getenv(
+    "FEAR_GREED_URL",       "https://api.alternative.me/fng/")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
@@ -50,7 +51,7 @@ SYMBOLS = [
 ]
 WARMUP = 210   # candles needed for EMA-200
 
-OK   = "✅"
+OK = "✅"
 FAIL = "❌"
 WARN = "⚠️ "
 
@@ -184,8 +185,8 @@ def check_layers():
         # L1
         l1_pass, l1 = is_market_moving(window)
         if not l1_pass:
-            ae     = l1.get("atr_expanding", False)
-            vs     = l1.get("volume_spike",  False)
+            ae = l1.get("atr_expanding", False)
+            vs = l1.get("volume_spike",  False)
             adx_ok = (l1.get("adx") or 0) > 20
             l1_pass = ae and vs and adx_ok
 
@@ -196,9 +197,9 @@ def check_layers():
         l3_pass, l3 = is_not_overbought(window)
 
         # L5 (relative)
-        last   = window[-1]
+        last = window[-1]
         spread = (last["high"] - last["low"]) * 0.1
-        vol24  = sum(c["volume"] * c["close"] for c in window[-24:])
+        vol24 = sum(c["volume"] * c["close"] for c in window[-24:])
         spr_ok = max(spread, 0.01) / last["close"] < 0.005
         vol_ok = vol24 >= 50_000_000
         l5_pass = spr_ok and vol_ok
@@ -210,9 +211,9 @@ def check_layers():
 
         # L10
         total_vol = sum(c["volume"] for c in window[-24:]) or 1
-        buy_vol   = sum(c["taker_buy_vol"] for c in window[-24:])
+        buy_vol = sum(c["taker_buy_vol"] for c in window[-24:])
         buy_ratio = buy_vol / total_vol * 100
-        pressure  = {
+        pressure = {
             "ok": True,
             "buy_ratio_pct": buy_ratio,
             "net_btc": buy_vol - (total_vol - buy_vol),
@@ -224,9 +225,9 @@ def check_layers():
         l10_pass, _ = check_buy_pressure(pressure)
 
         # L2 detail
-        p     = l2.get("price", 0)
-        e50   = l2.get("ema50", 0)
-        e200  = l2.get("ema200", 0)
+        p = l2.get("price", 0)
+        e50 = l2.get("ema50", 0)
+        e200 = l2.get("ema200", 0)
         trend = "↑ uptrend" if p > e50 > e200 else "↓ downtrend"
         l2_info = (
             f"price={p:.2f} EMA50={e50:.2f} EMA200={e200:.2f} {trend}"
