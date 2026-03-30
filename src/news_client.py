@@ -19,10 +19,12 @@ from datetime import datetime, timezone, timedelta
 logger = logging.getLogger(__name__)
 
 CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
-CRYPTOPANIC_BASE = os.getenv("CRYPTOPANIC_URL", "https://cryptopanic.com/api/v1/posts/")
+CRYPTOPANIC_BASE = os.getenv(
+    "CRYPTOPANIC_URL", "https://cryptopanic.com/api/v1/posts/")
 
 # CoinDesk RSS — works without auth
-_coindesk_rss = os.getenv("COINDESK_RSS_URL", "https://www.coindesk.com/arc/outboundfeeds/rss/?category=markets")
+_coindesk_rss = os.getenv(
+    "COINDESK_RSS_URL", "https://www.coindesk.com/arc/outboundfeeds/rss/?category=markets")
 COINDESK_RSS = {
     "BTC": _coindesk_rss,
     "ETH": _coindesk_rss,

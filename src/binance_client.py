@@ -13,7 +13,8 @@ client = Client(
 # URLs from .env (with sensible defaults so the bot works even without them)
 _BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
 _BINANCE_FUTURES = os.getenv("BINANCE_FUTURES_URL", "https://fapi.binance.com")
-_FEAR_GREED_URL = os.getenv("FEAR_GREED_URL", "https://api.alternative.me/fng/?limit=2")
+_FEAR_GREED_URL = os.getenv(
+    "FEAR_GREED_URL", "https://api.alternative.me/fng/?limit=2")
 
 
 def get_candles(symbol="BTCUSDT", interval="1h", limit=15):
