@@ -37,12 +37,13 @@ from src.indicators import (
     check_buy_pressure,
     check_fear_greed,
     check_funding_rate,
-    check_liquidity,
-    check_momentum,
     check_risk_reward,
-    check_timing,
-    check_trend,
-    check_volatility,
+    has_liquidity,
+    is_market_moving,
+    is_not_overbought,
+    is_uptrend,
+    GOOD_HOURS_UTC,
+    SKIP_WEEKDAYS,
 )
 
 load_dotenv()
@@ -190,36 +191,44 @@ def _eval_bar(candles_window: list, ts_ms: int,
     Returns (signal: bool, layer_snapshot: dict)
     """
     # L1 — Volatility
-    l1_pass, l1 = check_volatility(candles_window)
+    l1_pass, l1 = is_market_moving(candles_window)
 
     # L2 — Trend
-    l2_pass, l2 = check_trend(candles_window)
+    l2_pass, l2 = is_uptrend(candles_window)
 
     # L3 — Momentum
-    l3_pass, l3 = check_momentum(candles_window)
+    l3_pass, l3 = is_not_overbought(candles_window)
 
-    # L4 — Timing (from candle timestamp)
+    # L4 — Timing (evaluated against historical candle time, not now)
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-    l4_pass, l4 = check_timing(dt)
+    _hour_ok = dt.hour in GOOD_HOURS_UTC
+    _day_ok = dt.weekday() not in SKIP_WEEKDAYS
+    l4_pass = _hour_ok and _day_ok
+    l4 = {
+        "hour_utc": dt.hour,
+        "weekday": dt.strftime("%A"),
+        "hour_ok": _hour_ok,
+        "weekday_ok": _day_ok,
+    }
 
-    # L5 — Liquidity (approximated via (high-low)/close)
+    # L5 — Liquidity (approximated from candle data)
     last = candles_window[-1]
     approx_spread = (last["high"] - last["low"]) * 0.1  # rough mid-spread
-    fake_spread_data = {
-        "spread": max(approx_spread, 0.01),
-        "bid_depth": 50.0,
-        "ask_depth": 50.0,
-        "volume_usd": last["volume"] * last["close"],
-    }
-    l5_pass, l5 = check_liquidity(fake_spread_data)
+    volume_24h = sum(
+        c["volume"] * c["close"] for c in candles_window[-24:]
+    )
+    l5_pass, l5 = has_liquidity(
+        spread=max(approx_spread, 0.01),
+        bid_depth=50.0,
+        ask_depth=50.0,
+        volume_24h=volume_24h,
+    )
 
     # L6 — Risk/Reward
-    price = last["close"]
     l6_pass, l6 = check_risk_reward(
-        price=price,
-        tp_pct=tp_pct,
-        sl_pct=sl_pct,
         budget=100.0,
+        take_profit_pct=tp_pct,
+        stop_loss_pct=sl_pct,
     )
 
     # L7 — News: always skip in backtest
@@ -376,8 +385,8 @@ def _calc_stats(trades: list, total_candles: int,
             "sharpe_ratio": 0.0, "signal_freq": 0.0,
         }
 
-    wins    = [t for t in trades if t["result"] == "TP_HIT"]
-    losses  = [t for t in trades if t["result"] == "SL_HIT"]
+    wins = [t for t in trades if t["result"] == "TP_HIT"]
+    losses = [t for t in trades if t["result"] == "SL_HIT"]
     timeouts = [t for t in trades if t["result"] == "TIMEOUT"]
 
     win_rate = len(wins) / len(trades) * 100

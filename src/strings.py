@@ -10,14 +10,34 @@ STRINGS = {
     "hello": {
         "en": (
             "👋 Hello, {name}!\n\n"
-            "🤖 I analyse the market across *10 decision layers*.\n"
-            "Choose a token to analyse:"
+            "🤖 I analyse the market across *10 decision layers*.\n\n"
+            "Choose what you want to do:"
         ),
         "ru": (
             "👋 Привет, {name}!\n\n"
-            "🤖 Я анализирую рынок по *10 уровням принятия решений*.\n"
-            "Выбери токен для анализа:"
+            "🤖 Я анализирую рынок по *10 уровням принятия решений*.\n\n"
+            "Выбери что хочешь сделать:"
         ),
+    },
+    "menu_pick_mode": {
+        "en": "Choose analysis mode:",
+        "ru": "Выбери режим анализа:",
+    },
+    "btn_mode_live": {
+        "en": "📡 Live analysis",
+        "ru": "📡 Живой анализ",
+    },
+    "btn_mode_backtest": {
+        "en": "📊 Backtest (history)",
+        "ru": "📊 Бэктест (история)",
+    },
+    "btn_mode_patterns": {
+        "en": "🔬 Patterns",
+        "ru": "🔬 Паттерны",
+    },
+    "pick_asset_live": {
+        "en": "📡 *Live analysis*\n\nChoose a token:",
+        "ru": "📡 *Живой анализ*\n\nВыбери токен:",
     },
     "btn_change_asset": {
         "en": "🔄 Change token",
@@ -267,6 +287,82 @@ STRINGS = {
     "analysis_failed": {
         "en": "❌ Analysis failed: `{err}`\n\nTry again later.",
         "ru": "❌ Ошибка анализа: `{err}`\n\nПопробуй позже.",
+    },
+
+    # ── Backtest ──────────────────────────────────────────────────────────────
+    "bt_pick_asset": {
+        "en": "📈 *Backtest* — choose asset:",
+        "ru": "📈 *Бэктест* — выбери актив:",
+    },
+    "bt_pick_period": {
+        "en": "📈 *Backtest {symbol}* — choose period:",
+        "ru": "📈 *Бэктест {symbol}* — выбери период:",
+    },
+    "bt_running": {
+        "en": (
+            "⏳ Running backtest *{symbol}* — *{days} days*\n\n"
+            "_Downloading {candles} candles from Binance..._\n"
+            "_This may take 20–40 seconds._"
+        ),
+        "ru": (
+            "⏳ Запускаю бэктест *{symbol}* — *{days} дней*\n\n"
+            "_Загружаю ~{candles} свечей с Binance..._\n"
+            "_Это займёт 20–40 секунд._"
+        ),
+    },
+    "bt_result": {
+        "en": (
+            "📈 *{symbol} — Backtest {days}d*\n"
+            "_{date_from}  →  {date_to}_\n\n"
+            "Signals found:    *{signals}*  _{freq}_\n"
+            "Win rate:         *{wr}%*  ({wins}✅ / {losses}❌ / {timeouts}⏱)\n"
+            "Avg profit:       *{avg_profit}%*\n"
+            "Avg loss:         *{avg_loss}%*\n"
+            "Total P\\&L:       *{total_pnl}%*  (on $100/trade)\n"
+            "Max drawdown:     *{max_dd}%*\n"
+            "Sharpe ratio:     *{sharpe}*\n\n"
+            "Best trade:  *{best_pnl}%*  _{best_time}_\n"
+            "Worst trade: *{worst_pnl}%*  _{worst_time}_"
+        ),
+        "ru": (
+            "📈 *{symbol} — Бэктест {days}д*\n"
+            "_{date_from}  →  {date_to}_\n\n"
+            "Сигналов:        *{signals}*  _{freq}_\n"
+            "Win rate:        *{wr}%*  ({wins}✅ / {losses}❌ / {timeouts}⏱)\n"
+            "Avg профит:      *{avg_profit}%*\n"
+            "Avg убыток:      *{avg_loss}%*\n"
+            "Итог P\\&L:      *{total_pnl}%*  (на $100/сделку)\n"
+            "Max просадка:    *{max_dd}%*\n"
+            "Sharpe ratio:    *{sharpe}*\n\n"
+            "Лучшая сделка:  *{best_pnl}%*  _{best_time}_\n"
+            "Худшая сделка:  *{worst_pnl}%*  _{worst_time}_"
+        ),
+    },
+    "bt_no_signals": {
+        "en": "⚠️ *No signals found* for {symbol} in {days} days.\n\nFilters may be too strict.",
+        "ru": "⚠️ *Сигналов не найдено* для {symbol} за {days} дней.\n\nФильтры слишком строгие.",
+    },
+    "bt_failed": {
+        "en": "❌ Backtest failed: `{err}`",
+        "ru": "❌ Ошибка бэктеста: `{err}`",
+    },
+    "btn_bt_patterns": {
+        "en": "🔬 View patterns",
+        "ru": "🔬 Паттерны",
+    },
+    "btn_bt_again": {
+        "en": "🔄 Run again",
+        "ru": "🔄 Запустить снова",
+    },
+
+    # ── Patterns ──────────────────────────────────────────────────────────────
+    "pat_no_data": {
+        "en": "⚠️ No backtest data for *{symbol}*.\nRun `/backtest` first.",
+        "ru": "⚠️ Нет данных бэктеста для *{symbol}*.\nСначала запусти `/backtest`.",
+    },
+    "btn_back_to_bt": {
+        "en": "◀️ Back",
+        "ru": "◀️ Назад",
     },
 }
 

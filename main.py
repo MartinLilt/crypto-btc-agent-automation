@@ -1,3 +1,4 @@
+import asyncio
 import os
 import logging
 from dotenv import load_dotenv
@@ -76,8 +77,21 @@ def _asset_keyboard():
     return rows  # list of rows, ready to embed in InlineKeyboardMarkup
 
 
+def _main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Main menu: Live / Backtest / Patterns + language toggle."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_mode_live",     lang),
+                              callback_data="menu_live")],
+        [InlineKeyboardButton(t("btn_mode_backtest", lang),
+                              callback_data="menu_backtest")],
+        [InlineKeyboardButton(t("btn_mode_patterns", lang),
+                              callback_data="menu_patterns")],
+        [_lang_btn(lang)],
+    ])
+
+
 def _full_keyboard(lang: str):
-    """Language button + asset picker rows."""
+    """Language button + asset picker rows (kept for backwards compat)."""
     return InlineKeyboardMarkup([[_lang_btn(lang)]] + _asset_keyboard())
 
 
@@ -90,7 +104,91 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         t("hello", lang, name=name),
         parse_mode="Markdown",
-        reply_markup=_full_keyboard(lang),
+        reply_markup=_main_menu_keyboard(lang),
+    )
+
+
+# ── Main menu callbacks ───────────────────────────────────────────────────────
+
+async def menu_live(update: Update,
+                    context: ContextTypes.DEFAULT_TYPE):
+    """User picked 'Live analysis' → show asset picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    buttons = [
+        InlineKeyboardButton(label, callback_data=f"asset_{sym}")
+        for label, sym in ASSETS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data="menu_back",
+    )])
+    await query.edit_message_text(
+        t("pick_asset_live", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def menu_backtest(update: Update,
+                        context: ContextTypes.DEFAULT_TYPE):
+    """User picked 'Backtest' → show asset picker (backtest flow)."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    buttons = [
+        InlineKeyboardButton(label, callback_data=f"bt_asset_{sym}")
+        for label, sym in ASSETS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data="menu_back",
+    )])
+    await query.edit_message_text(
+        t("bt_pick_asset", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def menu_patterns(update: Update,
+                        context: ContextTypes.DEFAULT_TYPE):
+    """User picked 'Patterns' → show asset picker for patterns."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    buttons = [
+        InlineKeyboardButton(label,
+                             callback_data=f"bt_patterns_{sym}")
+        for label, sym in ASSETS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data="menu_back",
+    )])
+    await query.edit_message_text(
+        t("btn_mode_patterns", lang) + " — " +
+        ("choose token:" if lang == "en" else "выбери токен:"),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def menu_back(update: Update,
+                    context: ContextTypes.DEFAULT_TYPE):
+    """Back button → return to main menu."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    name = update.effective_user.first_name
+    await query.edit_message_text(
+        t("hello", lang, name=name),
+        parse_mode="Markdown",
+        reply_markup=_main_menu_keyboard(lang),
     )
 
 
@@ -409,29 +507,296 @@ async def lang_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── Bot setup ─────────────────────────────────────────────────────────────────
+# ── Backtest — /backtest command ─────────────────────────────────────────────
+
+# Periods: (label_en, label_ru, days, candles_approx)
+BT_PERIODS = [
+    ("7 days",   "7 дней",   7,   168),
+    ("30 days",  "30 дней",  30,  720),
+    ("3 months", "3 месяца", 90,  2160),
+    ("6 months", "6 мес.",   180, 4320),
+    ("1 year",   "1 год",    365, 8760),
+]
+
+
+async def backtest_cmd(update: Update,
+                       context: ContextTypes.DEFAULT_TYPE):
+    """Entry point: /backtest — show asset picker."""
+    lang = _lang(context)
+    buttons = [
+        InlineKeyboardButton(label, callback_data=f"bt_asset_{sym}")
+        for label, sym in ASSETS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    await update.message.reply_text(
+        t("bt_pick_asset", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def bt_asset_chosen(update: Update,
+                          context: ContextTypes.DEFAULT_TYPE):
+    """Asset selected — show period picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    symbol = query.data[len("bt_asset_"):]
+    context.user_data["bt_symbol"] = symbol
+
+    label_en = next((lb for lb, sym in ASSETS if sym == symbol), symbol)
+    buttons = []
+    for en, ru, days, _ in BT_PERIODS:
+        period_label = ru if lang == "ru" else en
+        buttons.append(
+            InlineKeyboardButton(period_label,
+                                 callback_data=f"bt_run_{days}")
+        )
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    await query.edit_message_text(
+        t("bt_pick_period", lang, symbol=symbol),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Period selected — run backtest (blocking, shows progress first)."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    days = int(query.data[len("bt_run_"):])
+    symbol = context.user_data.get(
+        "bt_symbol",
+        context.user_data.get(CFG, {}).get("asset", "BTCUSDT"),
+    )
+    cfg = context.user_data.get(CFG, {})
+    tp_pct = cfg.get("take_profit_pct", DEFAULT_TP_PCT)
+    sl_pct = cfg.get("stop_loss_pct",   DEFAULT_SL_PCT)
+
+    candles_approx = next(
+        (c for _, _, d, c in BT_PERIODS if d == days), days * 24)
+
+    await query.edit_message_text(
+        t("bt_running", lang,
+          symbol=symbol, days=days, candles=candles_approx),
+        parse_mode="Markdown",
+    )
+
+    try:
+        from src.backtest_engine import run_backtest
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: run_backtest(symbol, days, tp_pct, sl_pct)
+        )
+    except Exception as err:
+        logger.exception("Backtest failed")
+        await query.edit_message_text(
+            t("bt_failed", lang, err=str(err)[:120]),
+            parse_mode="Markdown",
+        )
+        return
+
+    signals = result.get("total_signals", 0)
+    if signals == 0:
+        await query.edit_message_text(
+            t("bt_no_signals", lang, symbol=symbol, days=days),
+            parse_mode="Markdown",
+        )
+        return
+
+    trades = result.get("trades", [])
+    wins = [tr for tr in trades if tr["result"] == "TP_HIT"]
+    losses = [tr for tr in trades if tr["result"] == "SL_HIT"]
+    timeouts = [tr for tr in trades if tr["result"] == "TIMEOUT"]
+
+    # Best / worst trade
+    if trades:
+        best = max(trades, key=lambda x: x["pnl_pct"])
+        worst = min(trades, key=lambda x: x["pnl_pct"])
+        best_time = best["exit_time"][:10] if best["exit_time"] else "—"
+        worst_time = worst["exit_time"][:10] if worst["exit_time"] else "—"
+    else:
+        best = worst = {"pnl_pct": 0.0}
+        best_time = worst_time = "—"
+
+    # Date range from trades
+    if trades:
+        date_from = trades[0]["entry_time"][:10]
+        date_to = trades[-1]["entry_time"][:10]
+    else:
+        date_from = date_to = "—"
+
+    freq_str = (
+        f"~1/{days // max(signals, 1)}d"
+        if signals > 0 else "—"
+    )
+
+    msg = t(
+        "bt_result", lang,
+        symbol=symbol,
+        days=days,
+        date_from=date_from,
+        date_to=date_to,
+        signals=signals,
+        freq=freq_str,
+        wr=result["win_rate_pct"],
+        wins=len(wins),
+        losses=len(losses),
+        timeouts=len(timeouts),
+        avg_profit=f"{result['avg_profit_pct']:+.2f}",
+        avg_loss=f"{result['avg_loss_pct']:+.2f}",
+        total_pnl=f"{result['total_pnl_pct']:+.1f}",
+        max_dd=result["max_drawdown_pct"],
+        sharpe=result["sharpe_ratio"],
+        best_pnl=f"{best['pnl_pct']:+.2f}",
+        best_time=best_time,
+        worst_pnl=f"{worst['pnl_pct']:+.2f}",
+        worst_time=worst_time,
+    )
+    if len(msg) > 4090:
+        msg = msg[:4087] + "…"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            t("btn_bt_patterns", lang),
+            callback_data=f"bt_patterns_{symbol}",
+        )],
+        [InlineKeyboardButton(
+            t("btn_bt_again", lang),
+            callback_data=f"bt_asset_{symbol}",
+        )],
+        [InlineKeyboardButton(
+            t("btn_change_asset", lang),
+            callback_data="bt_start",
+        )],
+    ])
+    await query.edit_message_text(
+        msg, parse_mode="Markdown", reply_markup=keyboard,
+    )
+
+
+async def bt_patterns(update: Update,
+                      context: ContextTypes.DEFAULT_TYPE):
+    """Show computed patterns for the last backtest symbol."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    symbol = query.data[len("bt_patterns_"):]
+
+    try:
+        from src.pattern_analyzer import (
+            compute_patterns,
+            format_patterns_message,
+        )
+        patterns = compute_patterns(symbol)
+        msg = format_patterns_message(patterns, lang)
+    except Exception as err:
+        logger.exception("Patterns failed")
+        msg = t("pat_no_data", lang, symbol=symbol)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            t("btn_back_to_bt", lang),
+            callback_data=f"bt_asset_{symbol}",
+        )
+    ]])
+    await query.edit_message_text(
+        msg, parse_mode="Markdown", reply_markup=keyboard,
+    )
+
+
+async def patterns_cmd(update: Update,
+                       context: ContextTypes.DEFAULT_TYPE):
+    """/patterns — show patterns for last backtested symbol."""
+    lang = _lang(context)
+    symbol = context.user_data.get("bt_symbol",
+                                   context.user_data.get(CFG, {})
+                                   .get("asset", "BTCUSDT"))
+    try:
+        from src.pattern_analyzer import (
+            compute_patterns,
+            format_patterns_message,
+        )
+        patterns = compute_patterns(symbol)
+        msg = format_patterns_message(patterns, lang)
+    except Exception as err:
+        logger.exception("Patterns failed")
+        msg = t("pat_no_data", lang, symbol=symbol)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            t("btn_back_to_bt", lang),
+            callback_data=f"bt_asset_{symbol}",
+        )
+    ]])
+    await update.message.reply_text(
+        msg, parse_mode="Markdown", reply_markup=keyboard,
+    )
+
+
+# ── Bot setup ─────────────────────────────────────────────────────────────
+async def bt_start(update: Update,
+                   context: ContextTypes.DEFAULT_TYPE):
+    """Re-show asset picker (from 'Change asset' button inside backtest)."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    buttons = [
+        InlineKeyboardButton(label, callback_data=f"bt_asset_{sym}")
+        for label, sym in ASSETS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    await query.edit_message_text(
+        t("bt_pick_asset", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
 
 async def post_init(app):
     await app.bot.set_my_commands([
-        BotCommand("start", "Start / choose asset"),
+        BotCommand("start",    "Start / choose asset"),
+        BotCommand("backtest", "Run historical backtest 📊"),
+        BotCommand("patterns", "Best patterns from backtest 🔬"),
     ])
 
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
-    app.add_handler(CommandHandler("start", start))
+    # ── Core ──────────────────────────────────────────────────────────────────
+    app.add_handler(CommandHandler("start",    start))
     app.add_handler(CallbackQueryHandler(
         lang_toggle,  pattern="^lang_(en|ru)$"))
-    app.add_handler(CallbackQueryHandler(choose_asset, pattern="^asset_"))
-    app.add_handler(CallbackQueryHandler(analyse,      pattern="^analyse$"))
-    app.add_handler(CallbackQueryHandler(pick_asset,   pattern="^pick_asset$"))
+    app.add_handler(CallbackQueryHandler(menu_back,     pattern="^menu_back$"))
+    app.add_handler(CallbackQueryHandler(menu_live,     pattern="^menu_live$"))
+    app.add_handler(CallbackQueryHandler(
+        menu_backtest, pattern="^menu_backtest$"))
+    app.add_handler(CallbackQueryHandler(
+        menu_patterns, pattern="^menu_patterns$"))
+    app.add_handler(CallbackQueryHandler(choose_asset,  pattern="^asset_"))
+    app.add_handler(CallbackQueryHandler(analyse,       pattern="^analyse$"))
+    app.add_handler(CallbackQueryHandler(
+        pick_asset,    pattern="^pick_asset$"))
 
-    logger.info("Bot started")
+    # ── Backtest ──────────────────────────────────────────────────────────────
+    app.add_handler(CommandHandler("backtest", backtest_cmd))
+    app.add_handler(CommandHandler("patterns", patterns_cmd))
+    app.add_handler(CallbackQueryHandler(
+        bt_start,        pattern="^bt_start$"))
+    app.add_handler(CallbackQueryHandler(
+        bt_asset_chosen, pattern="^bt_asset_"))
+    app.add_handler(CallbackQueryHandler(bt_run,          pattern="^bt_run_"))
+    app.add_handler(CallbackQueryHandler(
+        bt_patterns,     pattern="^bt_patterns_"))
+
+    logger.info("Bot started (backtest enabled)")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
-    """Return current language for this user, default 'en'."""

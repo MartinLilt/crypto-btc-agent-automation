@@ -262,10 +262,10 @@ def _layer_block_stats(trades: list) -> dict:
         return {"layer_block": []}
 
     checks = {
-        "L1 ADX>25":       lambda t: (t.get("l1_adx") or 0) > 25,
-        "L3 RSI 35-65":    lambda t: 35 < (t.get("l3_rsi") or 50) < 65,
-        "L9 FG 25-74":     lambda t: 25 < (t.get("l9_fg_value") or 50) < 74,
-        "L10 Buy>50%":     lambda t: (t.get("l10_buy_ratio") or 50) > 50,
+        "L1 ADX>25": lambda t: (t.get("l1_adx") or 0) > 25,
+        "L3 RSI 35-65": lambda t: 35 < (t.get("l3_rsi") or 50) < 65,
+        "L9 FG 25-74": lambda t: 25 < (t.get("l9_fg_value") or 50) < 74,
+        "L10 Buy>50%": lambda t: (t.get("l10_buy_ratio") or 50) > 50,
         "L4 Weekday(M-F)": lambda t: t.get("weekday") not in (
             "Saturday", "Sunday"),
     }

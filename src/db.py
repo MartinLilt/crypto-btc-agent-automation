@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "data/backtest.db")
-REDIS_URL   = os.getenv("REDIS_URL",   "redis://localhost:6379/0")
-TTL_FG      = int(os.getenv("REDIS_TTL_FEAR_GREED", 3600))
+REDIS_URL = os.getenv("REDIS_URL",   "redis://localhost:6379/0")
+TTL_FG = int(os.getenv("REDIS_TTL_FEAR_GREED", 3600))
 TTL_FUNDING = int(os.getenv("REDIS_TTL_FUNDING",    300))
 TTL_CANDLES = int(os.getenv("REDIS_TTL_CANDLES",    60))
 
@@ -45,7 +45,8 @@ def _get_redis():
         return _redis_client
     try:
         import redis as redis_lib
-        r = redis_lib.from_url(REDIS_URL, decode_responses=True, socket_timeout=2)
+        r = redis_lib.from_url(
+            REDIS_URL, decode_responses=True, socket_timeout=2)
         r.ping()
         _redis_client = r
         logger.info("Redis connected: %s", REDIS_URL)
