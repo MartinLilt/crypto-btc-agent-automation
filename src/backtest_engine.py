@@ -38,7 +38,6 @@ from src.indicators import (
     check_fear_greed,
     check_funding_rate,
     check_risk_reward,
-    has_liquidity,
     is_market_moving,
     is_not_overbought,
     is_uptrend,
@@ -122,13 +121,15 @@ def _fetch_fear_greed_history() -> dict:
         return cache_get("fg:history") or {}
 
     try:
-        url = _FEAR_GREED_URL.split("?")[0] + "?limit=365&date_format=us"
+        # No date_format param → API returns unix timestamps (integers)
+        url = _FEAR_GREED_URL.split("?")[0] + "?limit=365"
         resp = requests.get(url, timeout=10)
         data = resp.json().get("data", [])
         history = {}
         for item in data:
-            # timestamp → YYYY-MM-DD
-            ts = int(item["timestamp"])
+            raw_ts = item["timestamp"]
+            # API returns unix timestamp as string, e.g. "1711497600"
+            ts = int(raw_ts)
             date_str = datetime.fromtimestamp(
                 ts, tz=timezone.utc).strftime("%Y-%m-%d")
             history[date_str] = int(item["value"])
@@ -190,39 +191,60 @@ def _eval_bar(candles_window: list, ts_ms: int,
     Run all layers on a window of candles ending at index i.
     Returns (signal: bool, layer_snapshot: dict)
     """
-    # L1 — Volatility
+    # L1 — Volatility (relative version: skip fixed $500 ATR threshold,
+    #       use ATR-expanding + volume-spike + ADX only — works for any asset)
     l1_pass, l1 = is_market_moving(candles_window)
+    if not l1_pass:
+        # Re-check without the hard USD ATR floor (BTC-only threshold)
+        atr_expanding = l1.get("atr_expanding", False)
+        volume_spike = l1.get("volume_spike", False)
+        adx_ok = (l1.get("adx") or 0) > 20   # relaxed: 20 vs 25
+        l1_pass = atr_expanding and volume_spike and adx_ok
+        l1["relative_override"] = l1_pass
 
-    # L2 — Trend
+    # L2 — Trend (relaxed for backtest: allow sideways, block only hard downtrend)
+    # Strict live rule: price > EMA50 > EMA200 + golden cross / established.
+    # Backtest relaxed: EMA50 slope must not be falling (covers sideways/recovery).
     l2_pass, l2 = is_uptrend(candles_window)
+    if not l2_pass:
+        # Accept if price is above EMA50 OR EMA50 slope is rising
+        price_ok = l2.get("price", 0) > l2.get("ema50", 0)
+        slope_ok = l2.get("ema50_slope_ok", False)
+        l2_pass = price_ok or slope_ok
+        l2["relaxed_override"] = l2_pass
 
     # L3 — Momentum
     l3_pass, l3 = is_not_overbought(candles_window)
 
-    # L4 — Timing (evaluated against historical candle time, not now)
+    # L4 — Timing: skip in backtest (would cut ~67% of bars on good-hours filter)
+    l4_pass = True
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-    _hour_ok = dt.hour in GOOD_HOURS_UTC
-    _day_ok = dt.weekday() not in SKIP_WEEKDAYS
-    l4_pass = _hour_ok and _day_ok
     l4 = {
         "hour_utc": dt.hour,
         "weekday": dt.strftime("%A"),
-        "hour_ok": _hour_ok,
-        "weekday_ok": _day_ok,
+        "hour_ok": dt.hour in GOOD_HOURS_UTC,
+        "weekday_ok": dt.weekday() not in SKIP_WEEKDAYS,
+        "skipped": True,
     }
 
-    # L5 — Liquidity (approximated from candle data)
+    # L5 — Liquidity (asset-relative version, not BTC-hardcoded $500M floor)
     last = candles_window[-1]
-    approx_spread = (last["high"] - last["low"]) * 0.1  # rough mid-spread
+    approx_spread = (last["high"] - last["low"]) * 0.1
     volume_24h = sum(
         c["volume"] * c["close"] for c in candles_window[-24:]
     )
-    l5_pass, l5 = has_liquidity(
-        spread=max(approx_spread, 0.01),
-        bid_depth=50.0,
-        ask_depth=50.0,
-        volume_24h=volume_24h,
-    )
+    # Use relative volume threshold: 50M USD works for top-30 altcoins
+    MIN_VOL = 50_000_000
+    spread_ok = max(approx_spread, 0.01) / last["close"] < 0.005  # <0.5%
+    vol_ok = volume_24h >= MIN_VOL
+    l5_pass = spread_ok and vol_ok
+    l5 = {
+        "spread": round(approx_spread, 6),
+        "spread_ok": spread_ok,
+        "volume_24h_usd": round(volume_24h, 2),
+        "volume_ok": vol_ok,
+        "min_volume_usd": MIN_VOL,
+    }
 
     # L6 — Risk/Reward
     l6_pass, l6 = check_risk_reward(

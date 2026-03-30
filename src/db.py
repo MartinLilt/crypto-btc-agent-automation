@@ -36,22 +36,27 @@ TTL_CANDLES = int(os.getenv("REDIS_TTL_CANDLES",    60))
 # ── Redis (optional — bot works without it) ───────────────────────────────────
 
 _redis_client = None
+_redis_disabled = False   # set True after first failed connect → no retry spam
 
 
 def _get_redis():
     """Return Redis client, or None if unavailable."""
-    global _redis_client
+    global _redis_client, _redis_disabled
+    if _redis_disabled:
+        return None
     if _redis_client is not None:
         return _redis_client
     try:
         import redis as redis_lib
         r = redis_lib.from_url(
-            REDIS_URL, decode_responses=True, socket_timeout=2)
+            REDIS_URL, decode_responses=True,
+            socket_timeout=2, socket_connect_timeout=2)
         r.ping()
         _redis_client = r
         logger.info("Redis connected: %s", REDIS_URL)
     except Exception as e:
         logger.warning("Redis unavailable (%s) — cache disabled", e)
+        _redis_disabled = True   # ← don't retry on every call
         _redis_client = None
     return _redis_client
 
