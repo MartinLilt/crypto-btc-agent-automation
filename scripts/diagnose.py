@@ -46,8 +46,7 @@ FEAR_GREED_URL = os.getenv(
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
-    "LINKUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT",
+    "BTCUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT", "LINKUSDT",
 ]
 WARMUP = 210   # candles needed for EMA-200
 

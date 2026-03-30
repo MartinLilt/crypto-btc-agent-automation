@@ -460,10 +460,11 @@ def run_backtest(
     tp_pct: float = 2.0,
     sl_pct: float = 1.0,
     interval: str = "1h",
+    save_db: bool = True,
 ) -> dict:
     """
     Run full backtest for symbol over given days.
-    Saves results to SQLite. Returns summary dict.
+    Saves results to SQLite (unless save_db=False). Returns summary dict.
     """
     init_db()
     logger.info("Starting backtest: %s %dd TP=%.1f%% SL=%.1f%%",
@@ -539,18 +540,20 @@ def run_backtest(
     # Compute stats
     stats = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
 
-    # Save to SQLite
-    run_meta = {
-        "symbol":   symbol,
-        "interval": interval,
-        "days":     days,
-        "tp_pct":   tp_pct,
-        "sl_pct":   sl_pct,
-        "total_candles": total_candles,
-        **stats,
-    }
-    run_id = save_backtest_run(run_meta)
-    save_backtest_trades(run_id, trades_raw)
+    # Save to SQLite (skipped when save_db=False, e.g. diagnostic runs)
+    run_id = 0
+    if save_db:
+        run_meta = {
+            "symbol":        symbol,
+            "interval":      interval,
+            "days":          days,
+            "tp_pct":        tp_pct,
+            "sl_pct":        sl_pct,
+            "total_candles": total_candles,
+            **stats,
+        }
+        run_id = save_backtest_run(run_meta)
+        save_backtest_trades(run_id, trades_raw)
 
     logger.info(
         "Backtest done: %d signals, WR=%.1f%%, P&L=%.2f%%",
@@ -558,11 +561,12 @@ def run_backtest(
     )
 
     return {
-        "run_id":   run_id,
-        "symbol":   symbol,
-        "days":     days,
-        "tp_pct":   tp_pct,
-        "sl_pct":   sl_pct,
-        "trades":   trades_raw,
+        "run_id": run_id,
+        "symbol": symbol,
+        "days":   days,
+        "tp_pct": tp_pct,
+        "sl_pct": sl_pct,
+        "trades": trades_raw,
+        "stats":  stats,
         **stats,
     }
