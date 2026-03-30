@@ -507,6 +507,107 @@ async def lang_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── MarkdownV2 helpers ────────────────────────────────────────────────────────
+
+def _esc(text: str) -> str:
+    """Escape a plain string for MarkdownV2."""
+    special = r"\_*[]()~`>#+-=|{}.!"
+    return "".join(f"\\{c}" if c in special else c for c in str(text))
+
+
+# ── Market context helper ─────────────────────────────────────────────────────
+
+def _build_market_context(symbol: str, result: dict, lang: str) -> str:
+    """
+    Build a short market-conditions block from the last bar of a backtest.
+    Shows ADX (trend strength), 24h volume, and trend direction.
+    Explains WHY signals may be few/none for low-activity assets like LTC.
+    """
+    trades = result.get("trades", [])
+    signals = result.get("total_signals", 0)
+
+    # Pull last-bar snapshot from backtest engine directly
+    try:
+        from src.backtest_engine import _fetch_candles_full, _eval_bar, _fetch_fear_greed_history
+        candles = _fetch_candles_full(symbol, 7)
+        WIN = 220
+        if len(candles) > WIN:
+            window = candles[-WIN - 1:]
+            fg = _fetch_fear_greed_history()
+            snap_sig, snap = _eval_bar(window, 0, fg, [], 2.0, 1.0, 0.001, symbol)
+        else:
+            return "_(not enough data)_" if lang == "en" else "_(недостаточно данных)_"
+    except Exception:
+        return "_(unavailable)_" if lang == "en" else "_(недоступно)_"
+
+    l1 = snap.get("l1", {})
+    l2 = snap.get("l2", {})
+    l5 = snap.get("l5", {})
+
+    adx   = l1.get("adx", 0)
+    price = l2.get("price", 0)
+    ema50 = l2.get("ema50", 0)
+    vol24 = l5.get("volume_24h_usd", 0)
+    atr   = l1.get("atr", 0)
+
+    # Trend label
+    if price > ema50 and l2.get("ema50_slope_ok"):
+        trend_en, trend_ru = "📈 uptrend", "📈 восходящий"
+    elif price < ema50 and not l2.get("ema50_slope_ok"):
+        trend_en, trend_ru = "📉 downtrend", "📉 нисходящий"
+    else:
+        trend_en, trend_ru = "➡️ sideways", "➡️ боковик"
+
+    # ADX label
+    if adx >= 25:
+        adx_label_en, adx_label_ru = "strong 💪", "сильный 💪"
+    elif adx >= 15:
+        adx_label_en, adx_label_ru = "weak ⚠️", "слабый ⚠️"
+    else:
+        adx_label_en, adx_label_ru = "very weak 😴", "очень слабый 😴"
+
+    # Volume label
+    if vol24 >= 500_000_000:
+        vol_label_en, vol_label_ru = "high 🔥", "высокий 🔥"
+    elif vol24 >= 50_000_000:
+        vol_label_en, vol_label_ru = "normal ✅", "нормальный ✅"
+    elif vol24 >= 10_000_000:
+        vol_label_en, vol_label_ru = "low ⚠️", "низкий ⚠️"
+    else:
+        vol_label_en, vol_label_ru = "very low 😴", "очень низкий 😴"
+
+    vol_m = vol24 / 1_000_000
+
+    # Warning if market is quiet (explains low signal count)
+    warn_en = warn_ru = ""
+    if adx < 20 or vol24 < 30_000_000:
+        warn_en = (
+            "\n⚠️ _Market is currently quiet — "
+            "fewer signals is expected behavior, not a bug\\._"
+        )
+        warn_ru = (
+            "\n⚠️ _Рынок сейчас тихий — "
+            "мало сигналов это норма, не баг\\._"
+        )
+
+    if lang == "ru":
+        return (
+            f"Тренд: {trend_ru}\n"
+            f"ADX \\(сила тренда\\): *{adx:.1f}* — {adx_label_ru}\n"
+            f"ATR \\(волатильность\\): *{atr:.3f}*\n"
+            f"Объём 24h: *${vol_m:.1f}M* — {vol_label_ru}"
+            f"{warn_ru}"
+        )
+    else:
+        return (
+            f"Trend: {trend_en}\n"
+            f"ADX \\(trend strength\\): *{adx:.1f}* — {adx_label_en}\n"
+            f"ATR \\(volatility\\): *{atr:.3f}*\n"
+            f"Volume 24h: *${vol_m:.1f}M* — {vol_label_en}"
+            f"{warn_en}"
+        )
+
+
 # ── Backtest — /backtest command ─────────────────────────────────────────────
 
 # Periods: (label_en, label_ru, days, candles_approx)
@@ -600,10 +701,12 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     signals = result.get("total_signals", 0)
+    market_ctx = _build_market_context(symbol, result, lang)
     if signals == 0:
         await query.edit_message_text(
-            t("bt_no_signals", lang, symbol=symbol, days=days),
-            parse_mode="Markdown",
+            t("bt_no_signals", lang, symbol=symbol, days=days,
+              market_ctx=market_ctx),
+            parse_mode="MarkdownV2",
         )
         return
 
@@ -636,25 +739,26 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = t(
         "bt_result", lang,
-        symbol=symbol,
+        symbol=_esc(symbol),
         days=days,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=_esc(date_from),
+        date_to=_esc(date_to),
         signals=signals,
-        freq=freq_str,
-        wr=result["win_rate_pct"],
+        freq=_esc(freq_str),
+        wr=_esc(result["win_rate_pct"]),
         wins=len(wins),
         losses=len(losses),
         timeouts=len(timeouts),
-        avg_profit=f"{result['avg_profit_pct']:+.2f}",
-        avg_loss=f"{result['avg_loss_pct']:+.2f}",
-        total_pnl=f"{result['total_pnl_pct']:+.1f}",
-        max_dd=result["max_drawdown_pct"],
-        sharpe=result["sharpe_ratio"],
-        best_pnl=f"{best['pnl_pct']:+.2f}",
-        best_time=best_time,
-        worst_pnl=f"{worst['pnl_pct']:+.2f}",
-        worst_time=worst_time,
+        avg_profit=_esc(f"{result['avg_profit_pct']:+.2f}"),
+        avg_loss=_esc(f"{result['avg_loss_pct']:+.2f}"),
+        total_pnl=_esc(f"{result['total_pnl_pct']:+.1f}"),
+        max_dd=_esc(result["max_drawdown_pct"]),
+        sharpe=_esc(result["sharpe_ratio"]),
+        best_pnl=_esc(f"{best['pnl_pct']:+.2f}"),
+        best_time=_esc(best_time),
+        worst_pnl=_esc(f"{worst['pnl_pct']:+.2f}"),
+        worst_time=_esc(worst_time),
+        market_ctx=market_ctx,
     )
     if len(msg) > 4090:
         msg = msg[:4087] + "…"
@@ -674,7 +778,7 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )],
     ])
     await query.edit_message_text(
-        msg, parse_mode="Markdown", reply_markup=keyboard,
+        msg, parse_mode="MarkdownV2", reply_markup=keyboard,
     )
 
 

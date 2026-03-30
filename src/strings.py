@@ -315,32 +315,48 @@ STRINGS = {
             "📈 *{symbol} — Backtest {days}d*\n"
             "_{date_from}  →  {date_to}_\n\n"
             "Signals found:    *{signals}*  _{freq}_\n"
-            "Win rate:         *{wr}%*  ({wins}✅ / {losses}❌ / {timeouts}⏱)\n"
+            "Win rate:         *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
             "Avg profit:       *{avg_profit}%*\n"
             "Avg loss:         *{avg_loss}%*\n"
-            "Total P\\&L:       *{total_pnl}%*  (on $100/trade)\n"
+            "Total P&L:        *{total_pnl}%*  \\(on $100/trade\\)\n"
             "Max drawdown:     *{max_dd}%*\n"
             "Sharpe ratio:     *{sharpe}*\n\n"
             "Best trade:  *{best_pnl}%*  _{best_time}_\n"
-            "Worst trade: *{worst_pnl}%*  _{worst_time}_"
+            "Worst trade: *{worst_pnl}%*  _{worst_time}_\n\n"
+            "📊 *Market conditions now:*\n"
+            "{market_ctx}"
         ),
         "ru": (
             "📈 *{symbol} — Бэктест {days}д*\n"
             "_{date_from}  →  {date_to}_\n\n"
             "Сигналов:        *{signals}*  _{freq}_\n"
-            "Win rate:        *{wr}%*  ({wins}✅ / {losses}❌ / {timeouts}⏱)\n"
+            "Win rate:        *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
             "Avg профит:      *{avg_profit}%*\n"
             "Avg убыток:      *{avg_loss}%*\n"
-            "Итог P\\&L:      *{total_pnl}%*  (на $100/сделку)\n"
+            "Итог P&L:        *{total_pnl}%*  \\(на $100/сделку\\)\n"
             "Max просадка:    *{max_dd}%*\n"
             "Sharpe ratio:    *{sharpe}*\n\n"
             "Лучшая сделка:  *{best_pnl}%*  _{best_time}_\n"
-            "Худшая сделка:  *{worst_pnl}%*  _{worst_time}_"
+            "Худшая сделка:  *{worst_pnl}%*  _{worst_time}_\n\n"
+            "📊 *Состояние рынка сейчас:*\n"
+            "{market_ctx}"
         ),
     },
     "bt_no_signals": {
-        "en": "⚠️ *No signals found* for {symbol} in {days} days.\n\nFilters may be too strict.",
-        "ru": "⚠️ *Сигналов не найдено* для {symbol} за {days} дней.\n\nФильтры слишком строгие.",
+        "en": (
+            "⚠️ *No signals found* for {symbol} in {days} days\\.\n\n"
+            "📊 *Market conditions now:*\n"
+            "{market_ctx}\n\n"
+            "_Filters are calibrated for active markets\\. "
+            "Low volatility or volume may reduce signals\\._"
+        ),
+        "ru": (
+            "⚠️ *Сигналов не найдено* для {symbol} за {days} дней\\.\n\n"
+            "📊 *Состояние рынка сейчас:*\n"
+            "{market_ctx}\n\n"
+            "_Фильтры настроены на активные рынки\\. "
+            "Низкая волатильность или объём сокращают сигналы\\._"
+        ),
     },
     "bt_failed": {
         "en": "❌ Backtest failed: `{err}`",
