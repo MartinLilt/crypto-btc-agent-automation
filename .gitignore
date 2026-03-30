@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+private.pem
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+
+# Logs & runtime data
+logs/
+data/*.db
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
