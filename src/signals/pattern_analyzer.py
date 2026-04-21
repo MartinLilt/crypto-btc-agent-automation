@@ -17,7 +17,7 @@ import logging
 from collections import defaultdict
 from typing import Optional
 
-from src.db import cache_get, cache_set, get_trades
+from src.data.db import cache_get, cache_set, get_trades
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,6 @@ def _layer_block_stats(trades: list) -> dict:
     Estimate how often each layer WOULD have blocked a losing trade
     (retroactive filter analysis).
     """
-    # We look at losing trades and check what each layer was
     losses = [t for t in trades if t["result"] == "SL_HIT"]
     if not losses:
         return {"layer_block": []}

@@ -15,7 +15,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-from src.strings import t
+from src.bot.strings import t
 
 load_dotenv()
 
@@ -32,11 +32,7 @@ CFG = "agent_config"
 
 # ── Supported assets ──────────────────────────────────────────────────────────
 ASSETS = [
-    ("₿ Bitcoin",  "BTCUSDT"),
-    ("Ξ Ethereum", "ETHUSDT"),
-    ("Ł Litecoin", "LTCUSDT"),
-    ("◎ Solana",   "SOLUSDT"),
-    ("⬡ Chainlink", "LINKUSDT"),
+    ("₿ Bitcoin", "BTCUSDT"),
 ]
 
 # Default trading params (no user input needed)
@@ -246,7 +242,7 @@ async def _run_analysis(query, context, lang: str):
     cfg = context.user_data[CFG]
 
     try:
-        from src.binance_client import (
+        from src.data.binance_client import (
             get_candles,
             get_current_price,
             get_order_book_spread,
@@ -256,8 +252,8 @@ async def _run_analysis(query, context, lang: str):
             get_fear_greed_index,
             get_taker_buy_pressure,
         )
-        from src.indicators import check_entry_signal
-        from src.news_client import get_recent_news, summarise_news
+        from src.signals.indicators import check_entry_signal
+        from src.data.news_client import get_recent_news, summarise_news
 
         symbol = cfg["asset"]
         candles = get_candles(symbol=symbol, interval="1h", limit=201)
@@ -306,7 +302,7 @@ async def _run_analysis(query, context, lang: str):
         ai_result = None
         if os.getenv("OPENAI_API_KEY"):
             try:
-                from src.ai_orchestrator import ai_review
+                from src.ai.orchestrator import ai_review
                 ai_result = ai_review(symbol, price, report)
                 logger.info("AI verdict: %s", ai_result.get("verdict"))
             except Exception as ai_err:
@@ -349,7 +345,7 @@ async def _run_analysis(query, context, lang: str):
             ai_conclusion = ai_result["conclusion"]
             if lang == "ru" and (ai_points or ai_conclusion):
                 try:
-                    from src.ai_orchestrator import translate_to_russian
+                    from src.ai.orchestrator import translate_to_russian
                     ai_points, ai_conclusion = translate_to_russian(
                         ai_points, ai_conclusion
                     )
@@ -528,7 +524,7 @@ def _build_market_context(symbol: str, result: dict, lang: str) -> str:
 
     # Pull last-bar snapshot from backtest engine directly
     try:
-        from src.backtest_engine import _fetch_candles_full, _eval_bar, _fetch_fear_greed_history
+        from src.backtest.engine import _fetch_candles_full, _eval_bar, _fetch_fear_greed_history
         candles = _fetch_candles_full(symbol, 7)
         WIN = 220
         if len(candles) > WIN:
@@ -688,7 +684,7 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        from src.backtest_engine import run_backtest
+        from src.backtest.engine import run_backtest
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None, lambda: run_backtest(symbol, days, tp_pct, sl_pct)
@@ -793,7 +789,7 @@ async def bt_patterns(update: Update,
     symbol = query.data[len("bt_patterns_"):]
 
     try:
-        from src.pattern_analyzer import (
+        from src.signals.pattern_analyzer import (
             compute_patterns,
             format_patterns_message,
         )
@@ -822,7 +818,7 @@ async def patterns_cmd(update: Update,
                                    context.user_data.get(CFG, {})
                                    .get("asset", "BTCUSDT"))
     try:
-        from src.pattern_analyzer import (
+        from src.signals.pattern_analyzer import (
             compute_patterns,
             format_patterns_message,
         )

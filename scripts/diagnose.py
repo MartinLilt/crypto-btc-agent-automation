@@ -15,7 +15,7 @@ Usage:
     python3 scripts/diagnose.py
 """
 
-from src.indicators import (
+from src.signals.indicators import (
     GOOD_HOURS_UTC,
     SKIP_WEEKDAYS,
     check_buy_pressure,
@@ -46,7 +46,7 @@ FEAR_GREED_URL = os.getenv(
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT", "LINKUSDT",
+    "BTCUSDT",
 ]
 WARMUP = 210   # candles needed for EMA-200
 

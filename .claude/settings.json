@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(yarn tsc --noEmit)",
+      "Bash(aws acm describe-certificate *)",
+      "Bash(aws acm list-certificates *)",
+      "Bash(aws dynamodb describe-table *)",
+      "Bash(aws dynamodb scan *)",
+      "Bash(dig *)",
+      "Bash(gh run watch *)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Claude stopped] Check if obsidian/02-DevLog/Dev Log.md needs updating with changes from this session.' >> /tmp/claude-obsidian-reminder.txt"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 import requests
 from dotenv import load_dotenv
 
-from src.db import (
+from src.data.db import (
     cache_fear_greed_history,
     cache_funding_history,
     get_fear_greed_for_date,
@@ -33,7 +33,7 @@ from src.db import (
     save_backtest_run,
     save_backtest_trades,
 )
-from src.indicators import (
+from src.signals.indicators import (
     check_buy_pressure,
     check_fear_greed,
     check_funding_rate,
@@ -117,7 +117,7 @@ def _fetch_fear_greed_history() -> dict:
     """
     cached = get_fear_greed_for_date("_meta")  # sentinel key
     if cached:
-        from src.db import cache_get
+        from src.data.db import cache_get
         return cache_get("fg:history") or {}
 
     try:
@@ -148,7 +148,7 @@ def _fetch_funding_history(symbol: str) -> list:
     Returns list of {timestamp: str, rate: float} or [] for spot-only assets.
     Cached in Redis.
     """
-    from src.db import cache_get
+    from src.data.db import cache_get
     cached = cache_get(f"funding:{symbol}:history")
     if cached:
         return cached
@@ -192,24 +192,18 @@ def _eval_bar(candles_window: list, ts_ms: int,
     Returns (signal: bool, layer_snapshot: dict)
     """
     # L1 — Volatility (relative version: skip fixed $500 ATR threshold,
-    #       use ATR-expanding + volume-spike + ADX only — works for any asset)
+    #       use ATR-expanding + volume-spike + ADX only)
     l1_pass, l1 = is_market_moving(candles_window)
     if not l1_pass:
-        # Re-check without the hard USD ATR floor (BTC-only threshold)
         atr_expanding = l1.get("atr_expanding", False)
         volume_spike = l1.get("volume_spike", False)
-        # LTC has structurally lower ADX — relax to 15 (vs 20 for others)
-        adx_min = 15 if symbol == "LTCUSDT" else 20
-        adx_ok = (l1.get("adx") or 0) > adx_min
+        adx_ok = (l1.get("adx") or 0) > 20
         l1_pass = atr_expanding and volume_spike and adx_ok
         l1["relative_override"] = l1_pass
 
     # L2 — Trend (relaxed for backtest: allow sideways, block only hard downtrend)
-    # Strict live rule: price > EMA50 > EMA200 + golden cross / established.
-    # Backtest relaxed: EMA50 slope must not be falling (covers sideways/recovery).
     l2_pass, l2 = is_uptrend(candles_window)
     if not l2_pass:
-        # Accept if price is above EMA50 OR EMA50 slope is rising
         price_ok = l2.get("price", 0) > l2.get("ema50", 0)
         slope_ok = l2.get("ema50_slope_ok", False)
         l2_pass = price_ok or slope_ok
@@ -229,15 +223,13 @@ def _eval_bar(candles_window: list, ts_ms: int,
         "skipped": True,
     }
 
-    # L5 — Liquidity (asset-relative version, not BTC-hardcoded $500M floor)
+    # L5 — Liquidity (BTC: $30M/24h floor)
     last = candles_window[-1]
     approx_spread = (last["high"] - last["low"]) * 0.1
     volume_24h = sum(
         c["volume"] * c["close"] for c in candles_window[-24:]
     )
-    # Use relative volume threshold.
-    # LTC trades ~$10-20M/day — use $10M floor; all others $30M.
-    MIN_VOL = 10_000_000 if symbol == "LTCUSDT" else 30_000_000
+    MIN_VOL = 30_000_000
     spread_ok = max(approx_spread, 0.01) / last["close"] < 0.005  # <0.5%
     vol_ok = volume_24h >= MIN_VOL
     l5_pass = spread_ok and vol_ok
@@ -273,8 +265,6 @@ def _eval_bar(candles_window: list, ts_ms: int,
     l8_pass, l8 = check_funding_rate(funding_data)
 
     # L9 — Fear & Greed: recorded as info, not a blocker in backtest.
-    # Live mode uses it to avoid Extreme Fear/Greed entries.
-    # In backtest we want to SEE how signals performed during fear periods.
     date_str = dt.strftime("%Y-%m-%d")
     fg_val = fg_history.get(date_str)
     if fg_val is not None:

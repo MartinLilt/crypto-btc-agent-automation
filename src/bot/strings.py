@@ -1,7 +1,7 @@
 """
 Localisation strings — EN / RU
 Usage:
-    from src.strings import t
+    from src.bot.strings import t
     t("welcome_back", lang, name=name, asset=asset, ...)
 """
 
