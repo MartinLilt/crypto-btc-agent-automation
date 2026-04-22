@@ -10,14 +10,28 @@ services:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel warning
 
+  ollama:
+    image: ollama/ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Pull model on first start (skipped if already downloaded)
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama serve & sleep 8 && ollama pull qwen2.5:3b && wait"]
+
   bot:
     build: .
     env_file:
       - .env
     depends_on:
       - redis
+      - ollama
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:3b
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -25,3 +39,4 @@ services:
 
 volumes:
   redis_data:
+  ollama_data:

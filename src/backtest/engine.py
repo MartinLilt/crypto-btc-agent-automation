@@ -521,12 +521,14 @@ def run_backtest(
             "l10_buy_ratio": l10.get("buy_ratio_pct"),
             "l10_net_vol":   l10.get("net_btc"),
             # Outcome
-            "result":        outcome["result"],
-            "exit_price":    outcome["exit_price"],
-            "exit_time":     outcome["exit_time"],
-            "pnl_pct":       outcome["pnl_pct"],
-            "hold_hours":    outcome["hold_hours"],
-            "max_drawdown_pct": outcome["max_drawdown_pct"],
+            "result":              outcome["result"],
+            "exit_price":          outcome["exit_price"],
+            "exit_time":           outcome["exit_time"],
+            "pnl_pct":             outcome["pnl_pct"],
+            "pnl_pct_net_fees":    outcome["pnl_pct_net_fees"],
+            "pnl_pct_after_tax":   outcome["pnl_pct_after_tax"],
+            "hold_hours":          outcome["hold_hours"],
+            "max_drawdown_pct":    outcome["max_drawdown_pct"],
         }
         trades_raw.append(trade)
 

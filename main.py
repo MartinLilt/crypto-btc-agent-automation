@@ -306,13 +306,12 @@ async def _run_analysis(query, context, lang: str):
         )
 
         ai_result = None
-        if os.getenv("OPENAI_API_KEY"):
-            try:
-                from src.ai.orchestrator import ai_review
-                ai_result = ai_review(symbol, price, report)
-                logger.info("AI verdict: %s", ai_result.get("verdict"))
-            except Exception as ai_err:
-                logger.warning("AI orchestration skipped: %s", ai_err)
+        try:
+            from src.ai.orchestrator import ai_review
+            ai_result = ai_review(symbol, price, report, lang=lang)
+            logger.info("AI verdict: %s", ai_result.get("verdict"))
+        except Exception as ai_err:
+            logger.warning("AI orchestration skipped: %s", ai_err)
 
         layers = report["layers"]
         l1  = layers["L1_volatility"]
@@ -361,14 +360,6 @@ async def _run_analysis(query, context, lang: str):
             ai_conf = ai_result["confidence"]
             ai_points = ai_result["points"]
             ai_conclusion = ai_result["conclusion"]
-            if lang == "ru" and (ai_points or ai_conclusion):
-                try:
-                    from src.ai.orchestrator import translate_to_russian
-                    ai_points, ai_conclusion = translate_to_russian(
-                        ai_points, ai_conclusion
-                    )
-                except Exception as tr_err:
-                    logger.warning("Translation skipped: %s", tr_err)
 
         # News summary text
         if l7.get("skipped") or l7.get("total", 0) == 0:
@@ -667,20 +658,24 @@ def _build_market_context(symbol: str, result: dict, lang: str) -> str:
             "мало сигналов это норма, не баг\\._"
         )
 
+    adx_s  = _esc(f"{adx:.1f}")
+    atr_s  = _esc(f"{atr:.0f}")
+    vol_s  = _esc(f"{vol_m:.1f}")
+
     if lang == "ru":
         return (
             f"Тренд: {trend_ru}\n"
-            f"ADX \\(сила тренда\\): *{adx:.1f}* — {adx_label_ru}\n"
-            f"ATR \\(волатильность\\): *{atr:.3f}*\n"
-            f"Объём 24h: *${vol_m:.1f}M* — {vol_label_ru}"
+            f"ADX \\(сила тренда\\): *{adx_s}* — {adx_label_ru}\n"
+            f"ATR \\(волатильность\\): *${atr_s}*\n"
+            f"Объём 24h: *${vol_s}M* — {vol_label_ru}"
             f"{warn_ru}"
         )
     else:
         return (
             f"Trend: {trend_en}\n"
-            f"ADX \\(trend strength\\): *{adx:.1f}* — {adx_label_en}\n"
-            f"ATR \\(volatility\\): *{atr:.3f}*\n"
-            f"Volume 24h: *${vol_m:.1f}M* — {vol_label_en}"
+            f"ADX \\(trend strength\\): *{adx_s}* — {adx_label_en}\n"
+            f"ATR \\(volatility\\): *${atr_s}*\n"
+            f"Volume 24h: *${vol_s}M* — {vol_label_en}"
             f"{warn_en}"
         )
 
@@ -726,13 +721,12 @@ async def bt_asset_chosen(update: Update,
     symbol = query.data[len("bt_asset_"):]
     context.user_data["bt_symbol"] = symbol
 
-    label_en = next((lb for lb, sym in ASSETS if sym == symbol), symbol)
     buttons = []
     for en, ru, days, _ in BT_PERIODS:
         period_label = ru if lang == "ru" else en
         buttons.append(
             InlineKeyboardButton(period_label,
-                                 callback_data=f"bt_run_{days}")
+                                 callback_data=f"bt_period_{days}")
         )
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     await query.edit_message_text(
@@ -742,17 +736,39 @@ async def bt_asset_chosen(update: Update,
     )
 
 
-async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Period selected — run backtest (blocking, shows progress first)."""
+async def bt_period_chosen(update: Update,
+                           context: ContextTypes.DEFAULT_TYPE):
+    """Period selected — show budget picker."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
 
-    days = int(query.data[len("bt_run_"):])
-    symbol = context.user_data.get(
-        "bt_symbol",
-        context.user_data.get(CFG, {}).get("asset", "BTCUSDT"),
+    days = int(query.data[len("bt_period_"):])
+    context.user_data["bt_days"] = days
+    symbol = context.user_data.get("bt_symbol", "BTCUSDT")
+
+    buttons = [
+        InlineKeyboardButton(f"${b:,}", callback_data=f"bt_run_{b}")
+        for b in BT_BUDGETS
+    ]
+    rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+    await query.edit_message_text(
+        t("bt_pick_budget", lang, symbol=symbol, days=days),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
     )
+
+
+async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Budget selected — run simulation."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    budget = float(query.data[len("bt_run_"):])
+    context.user_data["bt_budget"] = budget
+    symbol = context.user_data.get("bt_symbol", "BTCUSDT")
+    days = context.user_data.get("bt_days", 90)
     cfg = context.user_data.get(CFG, {})
     tp_pct = cfg.get("take_profit_pct", DEFAULT_TP_PCT)
     sl_pct = cfg.get("stop_loss_pct",   DEFAULT_SL_PCT)
@@ -791,31 +807,36 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     trades = result.get("trades", [])
-    wins = [tr for tr in trades if tr["result"] == "TP_HIT"]
-    losses = [tr for tr in trades if tr["result"] == "SL_HIT"]
+    wins     = [tr for tr in trades if tr["result"] == "TP_HIT"]
+    losses   = [tr for tr in trades if tr["result"] == "SL_HIT"]
     timeouts = [tr for tr in trades if tr["result"] == "TIMEOUT"]
 
-    # Best / worst trade
     if trades:
-        best = max(trades, key=lambda x: x["pnl_pct"])
+        best  = max(trades, key=lambda x: x["pnl_pct"])
         worst = min(trades, key=lambda x: x["pnl_pct"])
-        best_time = best["exit_time"][:10] if best["exit_time"] else "—"
+        best_time  = best["exit_time"][:10]  if best["exit_time"]  else "—"
         worst_time = worst["exit_time"][:10] if worst["exit_time"] else "—"
+        date_from  = trades[0]["entry_time"][:10]
+        date_to    = trades[-1]["entry_time"][:10]
     else:
         best = worst = {"pnl_pct": 0.0}
-        best_time = worst_time = "—"
+        best_time = worst_time = date_from = date_to = "—"
 
-    # Date range from trades
-    if trades:
-        date_from = trades[0]["entry_time"][:10]
-        date_to = trades[-1]["entry_time"][:10]
-    else:
-        date_from = date_to = "—"
+    freq_str = f"~1/{days // max(signals, 1)}d" if signals > 0 else "—"
 
-    freq_str = (
-        f"~1/{days // max(signals, 1)}d"
-        if signals > 0 else "—"
-    )
+    # Scale % results to actual $ using user's budget
+    scale = budget / 100.0
+    gross_usd    = result["total_pnl_pct"]          * scale
+    net_fees_usd = result.get("total_pnl_net_fees_pct", gross_usd / scale * scale - signals * 0.2 * scale) * scale
+    after_tax_usd = result.get("total_pnl_after_tax_pct", net_fees_usd * 0.85 / scale * scale) * scale
+
+    # Per-trade averages in $
+    avg_win_usd  = result["avg_profit_pct"]  * scale
+    avg_loss_usd = result["avg_loss_pct"]    * scale
+
+    # Annualised projection (simple linear scaling)
+    annual_factor = 365 / max(days, 1)
+    annual_usd = after_tax_usd * annual_factor
 
     msg = t(
         "bt_result", lang,
@@ -823,6 +844,7 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days=days,
         date_from=_esc(date_from),
         date_to=_esc(date_to),
+        budget=_esc(f"{budget:,.0f}"),
         signals=signals,
         freq=_esc(freq_str),
         wr=_esc(result["win_rate_pct"]),
@@ -831,11 +853,12 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         timeouts=len(timeouts),
         be_fees=_esc(f"{result.get('breakeven_wr_fees', 40.0):.1f}"),
         be_tax=_esc(f"{result.get('breakeven_wr_tax', 44.0):.1f}"),
-        avg_profit=_esc(f"{result['avg_profit_pct']:+.2f}"),
-        avg_loss=_esc(f"{result['avg_loss_pct']:+.2f}"),
-        total_pnl=_esc(f"{result['total_pnl_pct']:+.1f}"),
-        pnl_net_fees=_esc(f"{result.get('total_pnl_net_fees_pct', 0.0):+.1f}"),
-        pnl_after_tax=_esc(f"{result.get('total_pnl_after_tax_pct', 0.0):+.1f}"),
+        avg_win_usd=_esc(f"{avg_win_usd:+.2f}"),
+        avg_loss_usd=_esc(f"{avg_loss_usd:+.2f}"),
+        gross_usd=_esc(f"{gross_usd:+.2f}"),
+        net_fees_usd=_esc(f"{net_fees_usd:+.2f}"),
+        after_tax_usd=_esc(f"{after_tax_usd:+.2f}"),
+        annual_usd=_esc(f"{annual_usd:+.0f}"),
         max_dd=_esc(result["max_drawdown_pct"]),
         sharpe=_esc(result["sharpe_ratio"]),
         best_pnl=_esc(f"{best['pnl_pct']:+.2f}"),
@@ -851,6 +874,10 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(
             t("btn_bt_patterns", lang),
             callback_data=f"bt_patterns_{symbol}",
+        )],
+        [InlineKeyboardButton(
+            t("btn_bt_change_budget", lang),
+            callback_data=f"bt_period_{days}",
         )],
         [InlineKeyboardButton(
             t("btn_bt_again", lang),
@@ -1095,12 +1122,14 @@ def main():
     app.add_handler(CommandHandler("backtest", backtest_cmd))
     app.add_handler(CommandHandler("patterns", patterns_cmd))
     app.add_handler(CallbackQueryHandler(
-        bt_start,        pattern="^bt_start$"))
+        bt_start,         pattern="^bt_start$"))
     app.add_handler(CallbackQueryHandler(
-        bt_asset_chosen, pattern="^bt_asset_"))
-    app.add_handler(CallbackQueryHandler(bt_run,          pattern="^bt_run_"))
+        bt_asset_chosen,  pattern="^bt_asset_"))
     app.add_handler(CallbackQueryHandler(
-        bt_patterns,     pattern="^bt_patterns_"))
+        bt_period_chosen, pattern="^bt_period_"))
+    app.add_handler(CallbackQueryHandler(bt_run,           pattern="^bt_run_"))
+    app.add_handler(CallbackQueryHandler(
+        bt_patterns,      pattern="^bt_patterns_"))
 
     logger.info("Bot started (backtest enabled)")
     app.run_polling()

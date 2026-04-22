@@ -1,40 +1,30 @@
 """
-AI Orchestration Layer — GPT reviews the 5-layer signal report
-and makes the final entry decision with reasoning.
+AI Orchestration Layer — local LLM via Ollama reviews the 10-layer signal report.
 
-This is the meta-layer that sits above all technical indicators.
-GPT acts as a senior trader reviewing the analyst's report.
+Uses Ollama HTTP API (no cloud, no API key needed).
+Default model: qwen2.5:3b (~2GB RAM, runs on CPU, knows EN+RU).
+
+Env vars:
+  OLLAMA_HOST  — default http://localhost:11434 (http://ollama:11434 in Docker)
+  OLLAMA_MODEL — default qwen2.5:3b
 """
 
-import os
-import re
 import json
 import logging
-from openai import OpenAI
+import os
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-
 logger = logging.getLogger(__name__)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-_client = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        if not OPENAI_API_KEY:
-            raise ValueError(
-                "OPENAI_API_KEY is not set in .env"
-            )
-        _client = OpenAI(api_key=OPENAI_API_KEY)
-    return _client
+OLLAMA_HOST  = os.getenv("OLLAMA_HOST",  "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+_TIMEOUT     = 90  # seconds — local inference can be slow on CPU
 
 
-SYSTEM_PROMPT = """You are a professional but friendly trading assistant \
+SYSTEM_PROMPT_EN = """You are a professional but friendly trading assistant \
 explaining market conditions to a regular person who is not a trader.
 
 You receive a technical market analysis report with 10 layers of signals. \
@@ -58,7 +48,7 @@ Respond ONLY with valid JSON in this exact format:
     "✅ or ❌ One sentence about market activity / volatility.",
     "✅ or ❌ One sentence about the price trend.",
     "✅ or ❌ One sentence about momentum.",
-    "✅ or ❌ One sentence about timing.",
+    "✅ or ❌ One sentence about volume trend.",
     "✅ or ❌ One sentence about liquidity.",
     "✅ or ❌ One sentence about risk/reward and fees.",
     "✅ or ❌ One sentence about recent news sentiment.",
@@ -70,322 +60,208 @@ Respond ONLY with valid JSON in this exact format:
 }"""
 
 
+SYSTEM_PROMPT_RU = """Ты профессиональный, но дружелюбный торговый ассистент, \
+объясняющий рыночные условия обычному человеку без опыта трейдинга.
+
+Ты получаешь технический отчёт с 10 слоями сигналов. \
+По каждому слою напиши ОДНО короткое предложение: \
+что происходит и хорошо ли это для входа в сделку прямо сейчас. \
+Затем напиши краткий вывод с общим вердиктом.
+
+Правила:
+- Только простой русский язык — никаких непонятных аббревиатур без объяснений
+- Каждый пункт — ОДНО предложение, конкретное, максимум 90 символов
+- Начинай пункт с ✅ если слой позитивный, ❌ если негативный
+- Вывод: максимум 120 символов — общий вердикт и на что смотреть дальше
+- Тон: спокойный, уверенный, как доверенный советник
+- Будь честен — если условия плохие, скажи прямо
+
+Отвечай ТОЛЬКО валидным JSON в точно таком формате:
+{
+  "verdict": "WAIT" или "ENTER",
+  "confidence": 0-100,
+  "points": [
+    "✅ или ❌ Одно предложение об активности рынка / волатильности.",
+    "✅ или ❌ Одно предложение о тренде цены.",
+    "✅ или ❌ Одно предложение об импульсе.",
+    "✅ или ❌ Одно предложение о тренде объёма.",
+    "✅ или ❌ Одно предложение о ликвидности.",
+    "✅ или ❌ Одно предложение о соотношении риск/доход и комиссиях.",
+    "✅ или ❌ Одно предложение о свежих новостях.",
+    "✅ или ❌ Одно предложение об уровнях поддержки/сопротивления.",
+    "✅ или ❌ Одно предложение о свечном паттерне на последних 3 свечах.",
+    "✅ или ❌ Одно предложение о давлении покупателей vs продавцов за 6 часов."
+  ],
+  "conclusion": "1-2 предложения: общий вердикт и на что смотреть."
+}"""
+
+
 def _build_user_message(symbol: str, price: float, report: dict) -> str:
     layers = report["layers"]
-    l1 = layers["L1_volatility"]
-    l2 = layers["L2_trend"]
-    l3 = layers["L3_momentum"]
-    l4 = layers["L4_vol_trend"]
-    l5 = layers["L5_liquidity"]
-    l6 = layers["L6_risk_reward"]
-    l7 = layers.get("L7_news", {})
-    l8 = layers.get("L8_sr_proximity", {})
-    l9 = layers.get("L9_candle_pattern", {})
+    l1  = layers["L1_volatility"]
+    l2  = layers["L2_trend"]
+    l3  = layers["L3_momentum"]
+    l4  = layers["L4_vol_trend"]
+    l5  = layers["L5_liquidity"]
+    l6  = layers["L6_risk_reward"]
+    l7  = layers.get("L7_news", {})
+    l8  = layers.get("L8_sr_proximity", {})
+    l9  = layers.get("L9_candle_pattern", {})
     l10 = layers.get("L10_pressure", {})
 
-    asset_name = "Bitcoin" if "BTC" in symbol else "Ethereum"
     price_vs_short = l2.get("ema50", 0)
-    price_vs_long = l2.get("ema200", 0)
+    price_vs_long  = l2.get("ema200", 0)
     trend_desc = (
-        "above both its 50-day and 200-day average price (bullish structure)"
-        if l2.get("pass")
-        else (
-            f"above its 50-day average (${price_vs_short:,.0f}) "
-            f"but below its 200-day average (${price_vs_long:,.0f}) "
-            f"— the big trend is still down"
-            if price > price_vs_short
-            else "below both its key moving averages — bearish"
-        )
+        "above both 50 and 200 EMA (bullish structure)"
+        if l2.get("pass") else
+        f"above EMA50 (${price_vs_short:,.0f}) but below EMA200 (${price_vs_long:,.0f})"
+        if price > price_vs_short else
+        "below both key moving averages (bearish)"
     )
 
     vol_desc = (
-        "strong with expanding volatility and good volume"
-        if l1["pass"]
-        else (
-            "low — the market is moving sideways without conviction "
-            f"(trend strength ADX={l1['adx']:.0f}, needs >25)"
-            if not l1["atr_expanding"]
-            else "present but without enough volume confirmation"
-        )
+        f"strong — ADX={l1['adx']:.0f}, ATR expanding, good volume"
+        if l1["pass"] else
+        f"weak — ADX={l1['adx']:.0f} (needs >25), sideways market"
     )
 
     momentum_desc = (
-        f"healthy — RSI is {l3['rsi']:.0f} (neutral zone) "
-        f"and momentum indicators are bullish"
-        if l3["pass"]
-        else (
-            f"RSI is {l3['rsi']:.0f} — "
-            + ("overbought, risk of pullback" if l3['rsi'] >= 65
-               else "in fear zone, market recovering")
-        )
+        f"healthy — RSI={l3['rsi']:.0f} (neutral), MACD bullish"
+        if l3["pass"] else
+        f"RSI={l3['rsi']:.0f} — {'overbought' if l3['rsi'] >= 65 else 'oversold'}"
     )
 
     ratio = l4.get("ratio", 1.0)
     timing_desc = (
-        f"strong — recent 4h volume is {ratio:.2f}× the 24h average "
-        f"(market participation is elevated)"
-        if l4["pass"]
-        else (
-            f"weak — recent 4h volume is only {ratio:.2f}× the 24h average "
-            f"(low participation, less conviction)"
-            if ratio >= 0.5
-            else f"very low volume ({ratio:.2f}× avg) — thin market, avoid entry"
-        )
+        f"volume {ratio:.2f}× 24h average — elevated participation"
+        if l4["pass"] else
+        f"volume only {ratio:.2f}× avg — thin market"
     )
 
     liquidity_desc = (
-        "excellent — tight spread, deep order book"
-        if l5["pass"]
-        else (
-            f"order book is thin "
-            f"(only {l5['bid_depth_btc']} BTC on the buy side) "
-            f"— entering now risks slippage"
-            if not l5["depth_ok"]
-            else "spread is acceptable"
-        )
+        "tight spread, deep order book"
+        if l5["pass"] else
+        f"spread/depth issues — slippage risk"
     )
 
     rr_desc = (
-        f"favourable — net profit ${l6['net_profit']:.2f} vs "
-        f"net loss ${l6['net_loss']:.2f} after fees "
-        f"(reward/risk ratio {l6['rr_ratio']:.2f}x)"
-        if l6["pass"]
-        else (
-            f"poor — after Binance fees (${l6['total_fee']:.2f}), "
-            f"net profit would only be ${l6['net_profit']:.2f} "
-            f"vs potential loss of ${l6['net_loss']:.2f} "
-            f"(reward/risk {l6['rr_ratio']:.2f}x, needs ≥1.5x)"
-            if l6["profit_ok"]
-            else
-            f"trade not viable — fees alone (${l6['total_fee']:.2f}) "
-            f"would eat the profit; "
-            f"increase take-profit % or reduce budget"
-        )
+        f"RR={l6['rr_ratio']:.2f}x, net profit ${l6['net_profit']:.2f} after fees"
+        if l6["pass"] else
+        f"poor RR={l6['rr_ratio']:.2f}x — fees eat profit"
     )
 
-    # L7 — News sentiment
     if l7.get("skipped") or l7.get("total", 0) == 0:
-        news_desc = (
-            "no recent news found — neutral stance, "
-            "cannot confirm macro context"
-        )
+        news_desc = "no recent news — neutral"
     else:
-        total = l7["total"]
-        bullish = l7.get("bullish", 0)
-        bearish = l7.get("bearish", 0)
-        neutral = l7.get("neutral", 0)
-        score = l7.get("score", 0.0)
-        headlines = l7.get("headlines", [])
         mood = (
-            "mostly positive" if score > 0.2
-            else "mostly negative" if score < -0.2
-            else "mixed"
+            "mostly positive" if l7.get("score", 0) > 0.2 else
+            "mostly negative" if l7.get("score", 0) < -0.2 else "mixed"
         )
         news_desc = (
-            f"{mood} — {bullish} bullish, {bearish} bearish, "
-            f"{neutral} neutral out of {total} articles in the last 24 h"
-        )
-        if headlines:
-            news_desc += ". Recent headlines: " + " | ".join(
-                f'"{h[:60]}"' for h in headlines[:2]
-            )
-
-    # L8 — Support / Resistance proximity
-    if l8.get("skipped", False):
-        sr_desc = "support/resistance data unavailable — not enough candle history"
-    else:
-        n_blockers = l8.get("n_blockers", 0)
-        nearest = l8.get("nearest_resistance")
-        tp_price = l8.get("tp_price")
-        if n_blockers == 0:
-            sr_desc = (
-                f"path to take-profit (${tp_price:,.2f}) is clear — "
-                f"no resistance walls detected"
-            )
-        else:
-            blocking = l8.get("blocking_levels", [])
-            sr_desc = (
-                f"{n_blockers} resistance level(s) blocking the path to TP "
-                f"(nearest ${nearest:,.2f})"
-                + (f"; levels: {blocking}" if blocking else "")
-            )
-
-    # L9 — Candlestick pattern
-    if l9.get("skipped", False):
-        candle_desc = "not enough candle data to detect a pattern"
-    else:
-        pattern = l9.get("pattern", "UNKNOWN")
-        description = l9.get("description", "")
-        body_pct = l9.get("body_pct", 0)
-        candle_desc = (
-            f"{pattern.replace('_', ' ').title()} — {description} "
-            f"(body {body_pct:.0f}% of candle range)"
+            f"{mood} — {l7.get('bullish',0)} bullish, "
+            f"{l7.get('bearish',0)} bearish of {l7['total']} articles"
         )
 
-    # L10 — Buy/Sell pressure
-    if l10.get("skipped", False):
-        pressure_desc = (
-            "buy/sell pressure data unavailable — cannot assess "
-            "taker flow"
-        )
-    else:
-        ratio = l10.get("buy_ratio_pct", 50.0)
-        net = l10.get("net_btc", 0.0)
-        trend = l10.get("trend", "neutral")
-        hours = l10.get("hours", 24)
-        pressure_desc = (
-            f"in the last {hours}h, buyers made up {ratio:.1f}% of volume "
-            f"({trend}) — net {net:+,.0f} BTC taker flow"
-        )
-
-    passed = sum(
-        1 for v in [l1, l2, l3, l4, l5, l6, l7, l8, l9, l10]
-        if v.get("pass")
+    n_blockers = l8.get("n_blockers", 0)
+    sr_desc = (
+        f"path to TP (${l8.get('tp_price',0):,.0f}) is clear"
+        if n_blockers == 0 else
+        f"{n_blockers} resistance levels blocking TP (nearest ${l8.get('nearest_resistance',0):,.0f})"
     )
 
-    return f"""Asset: {asset_name} ({symbol})
-Current price: ${price:,.2f}
-Position size: ${l6['budget']:.2f} USDT
-Take-profit at: +{l6['take_profit_pct']}%  →  gross +${l6['gross_profit']:.2f}
-Stop-loss at:   -{l6['stop_loss_pct']}%   →  gross -${l6['gross_loss']:.2f}
-Exchange fees:  ${l6['total_fee']:.2f} (0.1% each side)
+    pattern  = l9.get("pattern", "UNKNOWN").replace("_", " ").title()
+    body_pct = l9.get("body_pct", 0)
+    candle_desc = f"{pattern} — body {body_pct:.0f}% of range"
 
-Here is what the 10 analysis checks found:
-
-1. Market activity: {vol_desc}
-2. Price trend: {asset_name} is currently {trend_desc}
-3. Momentum: {momentum_desc}
-4. Timing: {timing_desc}
-5. Liquidity: {liquidity_desc}
-6. Risk/Reward: {rr_desc}
-7. News sentiment: {news_desc}
-8. Support/Resistance: {sr_desc}
-9. Candle pattern: {candle_desc}
-10. Buy/Sell pressure: {pressure_desc}
-
-Overall: {passed} out of 10 checks passed.
-System recommendation: {"ENTER" if report["should_enter"] else "WAIT"}
-
-Please write a short, plain-English verdict for a regular person."""
-
-
-def translate_to_russian(points: list, conclusion: str) -> tuple:
-    """
-    Translate AI verdict points and conclusion to Russian.
-    Returns (translated_points list, translated_conclusion str).
-    Separate lightweight GPT call — no analysis, just translation.
-    """
-    client = _get_client()
-    logger.info("Translating AI verdict to Russian...")
-
-    # Build a single block to translate in one call
-    combined = "\n".join(
-        [f"{i+1}. {p}" for i, p in enumerate(points)]
-        + [f"ВЫВОД: {conclusion}"]
+    buy_ratio = l10.get("buy_ratio_pct", 50.0)
+    net_btc   = l10.get("net_btc", 0.0)
+    pressure_desc = (
+        f"last 6h: buyers {buy_ratio:.1f}% of volume, "
+        f"net {net_btc:+,.0f} BTC taker flow"
     )
 
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Переведи следующий текст на русский язык. "
-                    "Сохраняй ту же структуру нумерации и эмодзи. "
-                    "Не добавляй пояснений — только перевод."
-                ),
-            },
-            {"role": "user", "content": combined},
-        ],
-        temperature=0.1,
-        max_tokens=600,
+    passed = sum(1 for v in [l1,l2,l3,l4,l5,l6,l7,l8,l9,l10] if v.get("pass"))
+
+    return (
+        f"Asset: {symbol}\n"
+        f"Price: ${price:,.2f}\n"
+        f"Budget/trade: ${l6['budget']:.0f}  TP: +{l6['take_profit_pct']}%  SL: -{l6['stop_loss_pct']}%\n\n"
+        f"1. Volatility/Activity: {vol_desc}\n"
+        f"2. Trend: {trend_desc}\n"
+        f"3. Momentum: {momentum_desc}\n"
+        f"4. Volume trend: {timing_desc}\n"
+        f"5. Liquidity: {liquidity_desc}\n"
+        f"6. Risk/Reward: {rr_desc}\n"
+        f"7. News: {news_desc}\n"
+        f"8. Support/Resistance: {sr_desc}\n"
+        f"9. Candle pattern: {candle_desc}\n"
+        f"10. Buy pressure: {pressure_desc}\n\n"
+        f"Passed: {passed}/10  System verdict: {'ENTER' if report['should_enter'] else 'WAIT'}\n\n"
+        "Write your verdict as JSON."
     )
 
-    translated = response.choices[0].message.content.strip()
-    lines = translated.splitlines()
 
-    # Split back into points and conclusion
-    tr_points = []
-    tr_conclusion = conclusion  # fallback
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        upper = line.upper()
-        if upper.startswith("ВЫВОД:") or upper.startswith("ВЫВОД "):
-            tr_conclusion = line.split(":", 1)[-1].strip()
-            continue
-        # Match numbered lines: "1. ", "2. ", ..., "10. ", "1) " etc.
-        m = re.match(r"^(\d{1,2})[.)]\s+(.+)$", line)
-        if m:
-            tr_points.append(m.group(2).strip())
-        else:
-            # fallback — append non-empty non-header lines
-            if len(tr_points) < len(points):
-                tr_points.append(line)
-
-    # Pad if translation came back short
-    while len(tr_points) < len(points):
-        tr_points.append(points[len(tr_points)])
-
-    return tr_points, tr_conclusion
+def _is_available() -> bool:
+    """Quick check if Ollama is reachable."""
+    try:
+        r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=3)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
 def ai_review(
     symbol: str,
     price: float,
     report: dict,
+    lang: str = "en",
 ) -> dict:
     """
-    Send the 5-layer report to GPT for a structured verdict.
+    Send the 10-layer report to local Ollama LLM for a structured verdict.
 
-    Returns dict:
-    {
-        "verdict":    "ENTER" | "WAIT",
-        "confidence": int 0-100,
-        "points":     list of 5 plain-English sentences (one per layer),
-        "conclusion": str  (1-2 sentence overall verdict),
-        "raw":        str  (raw GPT response for debugging)
-    }
+    Returns dict with: verdict, confidence, points (list), conclusion, raw.
+    Falls back gracefully if Ollama is unavailable.
     """
-    client = _get_client()
-    user_msg = _build_user_message(symbol, price, report)
+    if not _is_available():
+        logger.warning("Ollama not available at %s — skipping AI review", OLLAMA_HOST)
+        return {"verdict": "WAIT", "confidence": 0, "points": [], "conclusion": "", "raw": ""}
 
-    logger.info("Sending market report to GPT (%s)...", OPENAI_MODEL)
+    system_prompt = SYSTEM_PROMPT_RU if lang == "ru" else SYSTEM_PROMPT_EN
+    user_msg      = _build_user_message(symbol, price, report)
 
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": user_msg},
-        ],
-        temperature=0.3,
-        max_tokens=600,
-        response_format={"type": "json_object"},
-    )
+    logger.info("Sending report to Ollama (%s)...", OLLAMA_MODEL)
 
-    raw = response.choices[0].message.content
-    logger.info("GPT response: %s", raw)
+    try:
+        resp = requests.post(
+            f"{OLLAMA_HOST}/api/chat",
+            json={
+                "model":    OLLAMA_MODEL,
+                "stream":   False,
+                "format":   "json",
+                "options":  {"temperature": 0.3, "num_predict": 700},
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_msg},
+                ],
+            },
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["message"]["content"]
+        logger.info("Ollama response received (%d chars)", len(raw))
+    except Exception as e:
+        logger.error("Ollama request failed: %s", e)
+        return {"verdict": "WAIT", "confidence": 0, "points": [], "conclusion": str(e), "raw": ""}
 
     try:
         parsed = json.loads(raw)
-        points = parsed.get("points", [])
-        # Fallback: if GPT still returns summary instead of points
-        if not points and parsed.get("summary"):
-            points = [parsed["summary"]]
         return {
             "verdict":    parsed.get("verdict", "WAIT").upper(),
             "confidence": int(parsed.get("confidence", 0)),
-            "points":     points,
+            "points":     parsed.get("points", []),
             "conclusion": parsed.get("conclusion", ""),
             "raw":        raw,
         }
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error("Failed to parse GPT response: %s", e)
-        return {
-            "verdict":    "WAIT",
-            "confidence": 0,
-            "points":     [],
-            "conclusion": f"AI analysis unavailable: {e}",
-            "raw":        raw,
-        }
+        logger.error("Failed to parse Ollama response: %s\n%s", e, raw[:300])
+        return {"verdict": "WAIT", "confidence": 0, "points": [], "conclusion": "", "raw": raw}

@@ -28,8 +28,8 @@ STRINGS = {
         "ru": "📡 Живой анализ",
     },
     "btn_mode_backtest": {
-        "en": "📊 Backtest (history)",
-        "ru": "📊 Бэктест (история)",
+        "en": "🧮 Simulator",
+        "ru": "🧮 Симулятор",
     },
     "btn_mode_patterns": {
         "en": "🔬 Patterns",
@@ -289,59 +289,69 @@ STRINGS = {
         "ru": "❌ Ошибка анализа: `{err}`\n\nПопробуй позже.",
     },
 
-    # ── Backtest ──────────────────────────────────────────────────────────────
+    # ── Simulation calculator ─────────────────────────────────────────────────
     "bt_pick_asset": {
-        "en": "📈 *Backtest* — choose asset:",
-        "ru": "📈 *Бэктест* — выбери актив:",
+        "en": "🧮 *Simulation* — choose asset:",
+        "ru": "🧮 *Симуляция* — выбери актив:",
     },
     "bt_pick_period": {
-        "en": "📈 *Backtest {symbol}* — choose period:",
-        "ru": "📈 *Бэктест {symbol}* — выбери период:",
+        "en": "🧮 *{symbol}* — choose period to simulate:",
+        "ru": "🧮 *{symbol}* — выбери период симуляции:",
+    },
+    "bt_pick_budget": {
+        "en": (
+            "🧮 *{symbol} · {days}d* — choose capital per trade:\n\n"
+            "_Each trade uses this amount\\. Fees and LT tax are applied\\._"
+        ),
+        "ru": (
+            "🧮 *{symbol} · {days}д* — выбери капитал на сделку:\n\n"
+            "_Каждая сделка использует эту сумму\\. Учитываются комиссии и налог ЛТ\\._"
+        ),
     },
     "bt_running": {
         "en": (
-            "⏳ Running backtest *{symbol}* — *{days} days*\n\n"
+            "⏳ Running simulation *{symbol}* — *{days} days*\n\n"
             "_Downloading {candles} candles from Binance..._\n"
             "_This may take 20–40 seconds._"
         ),
         "ru": (
-            "⏳ Запускаю бэктест *{symbol}* — *{days} дней*\n\n"
+            "⏳ Запускаю симуляцию *{symbol}* — *{days} дней*\n\n"
             "_Загружаю ~{candles} свечей с Binance..._\n"
             "_Это займёт 20–40 секунд._"
         ),
     },
     "bt_result": {
         "en": (
-            "📈 *{symbol} — Backtest {days}d*\n"
-            "_{date_from}  →  {date_to}_\n\n"
-            "Signals:      *{signals}*  _{freq}_\n"
-            "Win rate:     *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
+            "🧮 *{symbol} — Simulation {days}d*\n"
+            "_{date_from}  →  {date_to}_  ·  Capital/trade: *${budget}*\n\n"
+            "Signals:   *{signals}*  _{freq}_\n"
+            "Win rate:  *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
             "_Break\\-even: fees {be_fees}%  \\|  fees\\+tax {be_tax}%_\n\n"
-            "Avg profit:   *{avg_profit}%*  /  Avg loss: *{avg_loss}%*\n\n"
-            "💰 *P&L per $100 trade:*\n"
-            "  Gross \\(no fees\\):        *{total_pnl}%*\n"
-            "  After Binance 0\\.2%:     *{pnl_net_fees}%*\n"
-            "  After LT tax 15%:        *{pnl_after_tax}%*\n\n"
-            "Max drawdown:  *{max_dd}%*\n"
-            "Sharpe ratio:  *{sharpe}*\n\n"
+            "Avg win:   *{avg_win_usd}$*  /  Avg loss: *{avg_loss_usd}$*\n\n"
+            "💰 *Total result over {days} days:*\n"
+            "  Gross \\(no fees\\):      *{gross_usd}$*\n"
+            "  After Binance 0\\.2%:  *{net_fees_usd}$*\n"
+            "  After LT tax 15%:    *{after_tax_usd}$*\n"
+            "  📅 Projected annual:  *{annual_usd}$*\n\n"
+            "Max drawdown:  *{max_dd}%*  ·  Sharpe: *{sharpe}*\n\n"
             "Best:  *{best_pnl}%*  _{best_time}_\n"
             "Worst: *{worst_pnl}%*  _{worst_time}_\n\n"
             "📊 *Market conditions now:*\n"
             "{market_ctx}"
         ),
         "ru": (
-            "📈 *{symbol} — Бэктест {days}д*\n"
-            "_{date_from}  →  {date_to}_\n\n"
-            "Сигналов:    *{signals}*  _{freq}_\n"
-            "Win rate:    *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
+            "🧮 *{symbol} — Симуляция {days}д*\n"
+            "_{date_from}  →  {date_to}_  ·  Капитал/сделка: *${budget}*\n\n"
+            "Сигналов:  *{signals}*  _{freq}_\n"
+            "Win rate:  *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
             "_Безубыток: с комис\\. {be_fees}%  \\|  \\+налог {be_tax}%_\n\n"
-            "Avg профит:  *{avg_profit}%*  /  Avg убыток: *{avg_loss}%*\n\n"
-            "💰 *P&L на $100/сделку:*\n"
-            "  Брутто \\(без комис\\):        *{total_pnl}%*\n"
-            "  После комис Binance 0\\.2%:  *{pnl_net_fees}%*\n"
-            "  После налога Литва 15%:     *{pnl_after_tax}%*\n\n"
-            "Max просадка:  *{max_dd}%*\n"
-            "Sharpe ratio:  *{sharpe}*\n\n"
+            "Avg выигрыш:  *{avg_win_usd}$*  /  Avg убыток: *{avg_loss_usd}$*\n\n"
+            "💰 *Итого за {days} дней:*\n"
+            "  Брутто \\(без комис\\):      *{gross_usd}$*\n"
+            "  После комис Binance 0\\.2%: *{net_fees_usd}$*\n"
+            "  После налога Литва 15%:   *{after_tax_usd}$*\n"
+            "  📅 Прогноз на год:         *{annual_usd}$*\n\n"
+            "Max просадка:  *{max_dd}%*  ·  Sharpe: *{sharpe}*\n\n"
             "Лучшая:  *{best_pnl}%*  _{best_time}_\n"
             "Худшая:  *{worst_pnl}%*  _{worst_time}_\n\n"
             "📊 *Состояние рынка сейчас:*\n"
@@ -365,16 +375,20 @@ STRINGS = {
         ),
     },
     "bt_failed": {
-        "en": "❌ Backtest failed: `{err}`",
-        "ru": "❌ Ошибка бэктеста: `{err}`",
+        "en": "❌ Simulation failed: `{err}`",
+        "ru": "❌ Ошибка симуляции: `{err}`",
     },
     "btn_bt_patterns": {
         "en": "🔬 View patterns",
         "ru": "🔬 Паттерны",
     },
+    "btn_bt_change_budget": {
+        "en": "💵 Change budget",
+        "ru": "💵 Изменить бюджет",
+    },
     "btn_bt_again": {
-        "en": "🔄 Run again",
-        "ru": "🔄 Запустить снова",
+        "en": "🔄 New simulation",
+        "ru": "🔄 Новая симуляция",
     },
 
     # ── Patterns ──────────────────────────────────────────────────────────────
