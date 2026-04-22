@@ -308,6 +308,16 @@ STRINGS = {
             "_Каждая сделка использует эту сумму\\. Учитываются комиссии и налог ЛТ\\._"
         ),
     },
+    "bt_pick_tp": {
+        "en": (
+            "🧮 *{symbol} · {days}d · ${budget}* — choose take profit:\n\n"
+            "_Stop loss is set automatically at TP÷2 \\(2:1 risk/reward\\)\\._"
+        ),
+        "ru": (
+            "🧮 *{symbol} · {days}д · ${budget}* — выбери тейк\\-профит:\n\n"
+            "_Стоп\\-лосс устанавливается автоматически TP÷2 \\(RR 2:1\\)\\._"
+        ),
+    },
     "bt_running": {
         "en": (
             "⏳ Running simulation *{symbol}* — *{days} days*\n\n"
@@ -323,7 +333,7 @@ STRINGS = {
     "bt_result": {
         "en": (
             "🧮 *{symbol} — Simulation {days}d*\n"
-            "_{date_from}  →  {date_to}_  ·  Capital/trade: *${budget}*\n\n"
+            "_{date_from}  →  {date_to}_  ·  *${budget}*  TP {tp}% / SL {sl}%\n\n"
             "Signals:   *{signals}*  _{freq}_\n"
             "Win rate:  *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
             "_Break\\-even \\(after Binance fees\\): {be_fees}%_\n\n"
@@ -341,7 +351,7 @@ STRINGS = {
         ),
         "ru": (
             "🧮 *{symbol} — Симуляция {days}д*\n"
-            "_{date_from}  →  {date_to}_  ·  Капитал/сделка: *${budget}*\n\n"
+            "_{date_from}  →  {date_to}_  ·  *${budget}*  TP {tp}% / SL {sl}%\n\n"
             "Сигналов:  *{signals}*  _{freq}_\n"
             "Win rate:  *{wr}%*  \\({wins}✅ / {losses}❌ / {timeouts}⏱\\)\n"
             "_Безубыток \\(после комис\\. Binance\\): {be_fees}%_\n\n"

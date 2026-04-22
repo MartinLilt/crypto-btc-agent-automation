@@ -695,6 +695,7 @@ BT_PERIODS = [
 
 # Budget presets for simulation calculator (per-trade capital in USD)
 BT_BUDGETS = [100, 250, 500, 1_000, 2_500, 5_000]
+BT_TP_OPTIONS = [1.0, 1.5, 2.0, 3.0, 5.0]   # TP%; SL = TP/2
 
 
 async def backtest_cmd(update: Update,
@@ -750,7 +751,7 @@ async def bt_period_chosen(update: Update,
     symbol = context.user_data.get("bt_symbol", "BTCUSDT")
 
     buttons = [
-        InlineKeyboardButton(f"${b:,}", callback_data=f"bt_run_{b}")
+        InlineKeyboardButton(f"${b:,}", callback_data=f"bt_budget_{b}")
         for b in BT_BUDGETS
     ]
     rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
@@ -761,19 +762,47 @@ async def bt_period_chosen(update: Update,
     )
 
 
-async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Budget selected — run simulation."""
+async def bt_budget_chosen(update: Update,
+                           context: ContextTypes.DEFAULT_TYPE):
+    """Budget selected — show TP picker."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
 
-    budget = float(query.data[len("bt_run_"):])
+    budget = float(query.data[len("bt_budget_"):])
     context.user_data["bt_budget"] = budget
     symbol = context.user_data.get("bt_symbol", "BTCUSDT")
-    days = context.user_data.get("bt_days", 90)
-    cfg = context.user_data.get(CFG, {})
-    tp_pct = cfg.get("take_profit_pct", DEFAULT_TP_PCT)
-    sl_pct = cfg.get("stop_loss_pct",   DEFAULT_SL_PCT)
+    days   = context.user_data.get("bt_days", 90)
+
+    def _tp_label(tp: float) -> str:
+        sl = tp / 2
+        sl_str = f"{sl:.2f}".rstrip("0").rstrip(".")
+        tp_str = f"{tp:.1f}".rstrip("0").rstrip(".")
+        return f"TP {tp_str}% / SL {sl_str}%"
+
+    buttons = [
+        InlineKeyboardButton(_tp_label(tp), callback_data=f"bt_tp_{tp}")
+        for tp in BT_TP_OPTIONS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    await query.edit_message_text(
+        t("bt_pick_tp", lang, symbol=symbol, days=days, budget=f"{budget:,.0f}"),
+        parse_mode="MarkdownV2",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """TP selected — run simulation."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    tp_pct = float(query.data[len("bt_tp_"):])
+    sl_pct = round(tp_pct / 2, 2)
+    symbol = context.user_data.get("bt_symbol", "BTCUSDT")
+    days   = context.user_data.get("bt_days", 90)
+    budget = context.user_data.get("bt_budget", 250.0)
 
     candles_approx = next(
         (c for _, _, d, c in BT_PERIODS if d == days), days * 24)
@@ -847,6 +876,8 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         date_from=_esc(date_from),
         date_to=_esc(date_to),
         budget=_esc(f"{budget:,.0f}"),
+        tp=_esc(f"{tp_pct:.1f}"),
+        sl=_esc(f"{sl_pct:.2f}").rstrip("0").rstrip("."),
         signals=signals,
         freq=_esc(freq_str),
         wr=_esc(result["win_rate_pct"]),
@@ -890,7 +921,7 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )],
         [InlineKeyboardButton(
             t("btn_bt_change_budget", lang),
-            callback_data=f"bt_period_{days}",
+            callback_data=f"bt_period_{days}",   # re-opens budget → TP flow
         )],
         [InlineKeyboardButton(
             t("btn_bt_again", lang),
@@ -1139,8 +1170,11 @@ def main():
     app.add_handler(CallbackQueryHandler(
         bt_asset_chosen,  pattern="^bt_asset_"))
     app.add_handler(CallbackQueryHandler(
-        bt_period_chosen, pattern="^bt_period_"))
-    app.add_handler(CallbackQueryHandler(bt_run,           pattern="^bt_run_"))
+        bt_period_chosen,  pattern="^bt_period_"))
+    app.add_handler(CallbackQueryHandler(
+        bt_budget_chosen,  pattern="^bt_budget_"))
+    app.add_handler(CallbackQueryHandler(
+        bt_run,            pattern="^bt_tp_"))
     app.add_handler(CallbackQueryHandler(
         bt_patterns,      pattern="^bt_patterns_"))
 

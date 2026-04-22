@@ -322,13 +322,17 @@ def _eval_bar(candles_window: list, ts_ms: int,
     # Hard filter: RSI > 65 blocks entry (backtest verified: avg loss RSI = 71.9)
     rsi_block = l3.get("rsi", 0) > 65
 
+    # Hard filter: ADX danger zone 25-40 (backtest data: WR=5-33% vs 54% outside)
+    adx_val = l1.get("adx", 0)
+    adx_block = 25 <= adx_val < 40
+
     # Hard filter: weekly EMA21 — skip entries in macro bear regime
     weekly_block = (
         weekly_ema21 is not None
         and candles_window[-1]["close"] < weekly_ema21
     )
 
-    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not weekly_block
+    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not adx_block and not weekly_block
 
     snapshot = {
         "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
@@ -581,6 +585,7 @@ def run_backtest(
             "pnl_pct_net_fees":    outcome["pnl_pct_net_fees"],
             "hold_hours":          outcome["hold_hours"],
             "max_drawdown_pct":    outcome["max_drawdown_pct"],
+            "total_score":         snapshot["total_score"],
         }
         trades_raw.append(trade)
 

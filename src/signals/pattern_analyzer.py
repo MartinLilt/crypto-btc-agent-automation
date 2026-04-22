@@ -225,6 +225,92 @@ def _power_combos(trades: list) -> dict:
     return {"power_combos": combos[:5]}
 
 
+def _by_adx_band(trades: list) -> dict:
+    def adx_band(t):
+        v = t.get("l1_adx")
+        if v is None:
+            return None
+        if v < 20:
+            return "Weak (<20)"
+        if v < 25:
+            return "Borderline (20-25)"
+        if v < 30:
+            return "Moderate (25-30)"
+        if v < 40:
+            return "Strong (30-40)"
+        return "Very strong (40+)"
+
+    groups = _group_by(trades, adx_band)
+    result = []
+    order = ["Weak (<20)", "Borderline (20-25)", "Moderate (25-30)",
+             "Strong (30-40)", "Very strong (40+)"]
+    for label in order:
+        if label in groups:
+            wr, size = _win_rate(groups[label])
+            if size >= MIN_SAMPLE:
+                avg_pnl = sum(t["pnl_pct"] for t in groups[label]) / size
+                result.append({
+                    "band": label, "win_rate": wr,
+                    "sample": size, "avg_pnl": round(avg_pnl, 3),
+                })
+    return {"adx_bands": result}
+
+
+def _by_score_band(trades: list) -> dict:
+    def score_band(t):
+        v = t.get("total_score")
+        if v is None:
+            return None
+        if v < 55:
+            return "Low (< 55)"
+        if v < 60:
+            return "Below avg (55-60)"
+        if v < 65:
+            return "Average (60-65)"
+        if v < 70:
+            return "Good (65-70)"
+        if v < 75:
+            return "Strong (70-75)"
+        return "Top (75+)"
+
+    groups = _group_by(trades, score_band)
+    result = []
+    order = ["Low (< 55)", "Below avg (55-60)", "Average (60-65)",
+             "Good (65-70)", "Strong (70-75)", "Top (75+)"]
+    for label in order:
+        if label in groups:
+            wr, size = _win_rate(groups[label])
+            if size >= MIN_SAMPLE:
+                avg_pnl = sum(t["pnl_pct"] for t in groups[label]) / size
+                result.append({
+                    "band": label, "win_rate": wr,
+                    "sample": size, "avg_pnl": round(avg_pnl, 3),
+                })
+    return {"score_bands": result}
+
+
+def _virtual_threshold_test(trades: list) -> list:
+    """
+    Simulate: what if we only entered when score >= threshold?
+    Returns list of {threshold, wr, signals, estimated_pnl}.
+    """
+    thresholds = [55, 60, 65, 70, 75, 80]
+    results = []
+    for thr in thresholds:
+        subset = [t for t in trades if (t.get("total_score") or 0) >= thr]
+        if len(subset) < MIN_SAMPLE:
+            continue
+        wr, size = _win_rate(subset)
+        avg_pnl = sum(t["pnl_pct"] for t in subset) / size
+        results.append({
+            "threshold": thr,
+            "signals":   size,
+            "win_rate":  wr,
+            "avg_pnl":   round(avg_pnl, 3),
+        })
+    return results
+
+
 def _optimal_hold(trades: list) -> dict:
     """
     Compute average hold time for wins vs losses.
@@ -302,14 +388,16 @@ def compute_patterns(symbol: str, days: Optional[int] = None) -> dict:
     wr_overall, total = _win_rate(trades)
 
     patterns = {
-        "symbol":      symbol,
+        "symbol":       symbol,
         "total_trades": total,
-        "overall_wr":  wr_overall,
+        "overall_wr":   wr_overall,
         **_by_hour(trades),
         **_by_weekday(trades),
-        **_by_fg_band(trades),
+        **_by_adx_band(trades),
+        **_by_score_band(trades),
+        "score_thresholds": _virtual_threshold_test(trades),
         **_by_rsi_band(trades),
-        **_by_funding_band(trades),
+        **_by_fg_band(trades),
         **_power_combos(trades),
         **_optimal_hold(trades),
         **_layer_block_stats(trades),
@@ -341,6 +429,37 @@ def format_patterns_message(patterns: dict, lang: str = "en") -> str:
             f"🔬 *Patterns — {sym}*  ({total} trades, WR {wr}%)\n",
         ]
 
+    # Score threshold simulation
+    score_thr = patterns.get("score_thresholds", [])
+    if score_thr:
+        label = "🎯 Если поднять порог входа (score)" if lang == "ru" else "🎯 What if we raised the entry threshold?"
+        lines.append(f"*{label}*")
+        for s in score_thr:
+            arrow = "→"
+            wr_icon = "✅" if s["win_rate"] >= 50 else ("⚠️" if s["win_rate"] >= 40 else "❌")
+            lines.append(
+                f"  score ≥ {s['threshold']}  {arrow}  {wr_icon} {s['win_rate']}% WR  "
+                f"({s['signals']} сд.  avg {s['avg_pnl']:+.2f}%)" if lang == "ru" else
+                f"  score ≥ {s['threshold']}  {arrow}  {wr_icon} {s['win_rate']}% WR  "
+                f"({s['signals']} trades  avg {s['avg_pnl']:+.2f}%)"
+            )
+        lines.append("")
+
+    # ADX bands
+    adx_bands = patterns.get("adx_bands", [])
+    if adx_bands:
+        label = "📈 Win rate по силе тренда (ADX)" if lang == "ru" else "📈 Win rate by trend strength (ADX)"
+        lines.append(f"*{label}*")
+        for b in adx_bands:
+            wr_icon = "✅" if b["win_rate"] >= 50 else ("⚠️" if b["win_rate"] >= 40 else "❌")
+            lines.append(
+                f"  ADX {b['band']} — {wr_icon} {b['win_rate']}% WR  "
+                f"(avg {b['avg_pnl']:+.2f}%  {b['sample']} сд.)" if lang == "ru" else
+                f"  ADX {b['band']} — {wr_icon} {b['win_rate']}% WR  "
+                f"(avg {b['avg_pnl']:+.2f}%  {b['sample']} trades)"
+            )
+        lines.append("")
+
     # Best hours
     best_h = patterns.get("best_hours", [])
     if best_h:
@@ -363,6 +482,21 @@ def format_patterns_message(patterns: dict, lang: str = "en") -> str:
         for d in best_d:
             lines.append(
                 f"  {d['day']} — {d['win_rate']}% WR ({d['sample']})"
+            )
+        lines.append("")
+
+    # RSI bands
+    rsi_bands = patterns.get("rsi_bands", [])
+    if rsi_bands:
+        label = "📊 Win rate по RSI при входе" if lang == "ru" else "📊 Win rate by RSI at entry"
+        lines.append(f"*{label}*")
+        for b in rsi_bands[:4]:
+            wr_icon = "✅" if b["win_rate"] >= 50 else ("⚠️" if b["win_rate"] >= 40 else "❌")
+            lines.append(
+                f"  RSI {b['band']} — {wr_icon} {b['win_rate']}% WR  "
+                f"(avg {b['avg_pnl']:+.2f}%  {b['sample']} сд.)" if lang == "ru" else
+                f"  RSI {b['band']} — {wr_icon} {b['win_rate']}% WR  "
+                f"(avg {b['avg_pnl']:+.2f}%  {b['sample']} trades)"
             )
         lines.append("")
 

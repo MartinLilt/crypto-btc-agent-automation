@@ -847,6 +847,14 @@ def check_entry_signal(
     if l3["rsi"] > 65:
         hard_blocks.append(f"RSI {l3['rsi']:.0f} > 65 (overbought — high reversal risk)")
 
+    # ADX danger zone 25-40: backtest data shows WR=5-33% vs 54%+ outside this range
+    adx_val = l1.get("adx", 0)
+    if 25 <= adx_val < 40:
+        hard_blocks.append(
+            f"ADX {adx_val:.1f} in danger zone 25–40 "
+            f"(backtest WR 5–33% — trend developing but unstable)"
+        )
+
     # Daily trend: only enter when price > daily EMA50 (bull market)
     if candles_1d and len(candles_1d) >= 50:
         ema50_1d = calculate_ema(candles_1d, 50)

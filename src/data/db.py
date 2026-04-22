@@ -210,6 +210,17 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_positions_status
             ON positions(status);
         """)
+    # Migrations — add columns that didn't exist in older schema
+    with _conn() as con:
+        for col_def in [
+            "ALTER TABLE backtest_trades ADD COLUMN total_score INTEGER",
+            "ALTER TABLE backtest_trades ADD COLUMN pnl_pct_net_fees REAL",
+        ]:
+            try:
+                con.execute(col_def)
+            except Exception:
+                pass   # column already exists
+
     logger.info("SQLite initialised: %s", SQLITE_PATH)
 
 
@@ -247,8 +258,8 @@ def save_backtest_trades(run_id: int, trades: list[dict]):
         "l1_atr", "l1_adx", "l2_ema50", "l2_ema200", "l2_gap_pct",
         "l3_rsi", "l3_macd_hist", "l4_pass", "l5_spread_pct", "l6_rr_ratio",
         "l8_funding", "l8_oi_chg", "l9_fg_value", "l10_buy_ratio", "l10_net_vol",
-        "result", "exit_price", "exit_time", "pnl_pct", "hold_hours",
-        "max_drawdown_pct",
+        "result", "exit_price", "exit_time", "pnl_pct", "pnl_pct_net_fees",
+        "hold_hours", "max_drawdown_pct", "total_score",
     ]
     placeholders = ", ".join("?" * len(cols))
     col_names = ", ".join(cols)
