@@ -312,7 +312,12 @@ def is_market_moving(candles: list) -> tuple[int, dict]:
     last_vol = volumes[-1] if volumes else 0
     volume_spike = last_vol > vol_avg
 
-    score = _score_l1(adx, atr_expanding, volume_spike)
+    # ADX slope: compare current ADX vs 5 candles ago — rising trend = forming
+    adx_prev = calculate_adx(candles[:-5]) if len(candles) > ADX_PERIOD + 7 else adx
+    adx_rising = adx > adx_prev + 1.0   # require at least +1 pt to avoid noise
+    slope_bonus = 2 if adx_rising else 0
+
+    score = min(10, _score_l1(adx, atr_expanding, volume_spike) + slope_bonus)
     details = {
         "score":        score,
         "pass":         score >= 7,
@@ -323,6 +328,8 @@ def is_market_moving(candles: list) -> tuple[int, dict]:
         "last_vol":     round(last_vol, 4),
         "vol_avg":      round(vol_avg, 4),
         "adx":          adx,
+        "adx_prev":     round(adx_prev, 2),
+        "adx_rising":   adx_rising,
     }
     return score, details
 
@@ -398,6 +405,17 @@ def is_uptrend(candles: list, candles_4h: list | None = None) -> tuple[int, dict
 
     score = min(10, max(0, score + tf4h_bonus))
 
+    # 24h VWAP: institutional anchor level
+    vwap_window = candles[-24:] if len(candles) >= 24 else candles
+    vwap_vol = sum(c["volume"] for c in vwap_window)
+    vwap = (
+        sum((c["high"] + c["low"] + c["close"]) / 3 * c["volume"] for c in vwap_window)
+        / vwap_vol if vwap_vol > 0 else price
+    )
+    vwap_above = price > vwap
+    vwap_bonus = 1 if vwap_above else -1
+    score = min(10, max(0, score + vwap_bonus))
+
     details = {
         "score":               score,
         "pass":                score >= 7,
@@ -411,6 +429,9 @@ def is_uptrend(candles: list, candles_4h: list | None = None) -> tuple[int, dict
         "tf4h_aligned":        tf4h_aligned,
         "tf4h_ema50":          round(tf4h_ema50, 2) if tf4h_ema50 else None,
         "tf4h_ema200":         round(tf4h_ema200, 2) if tf4h_ema200 else None,
+        "vwap":                round(vwap, 2),
+        "vwap_above":          vwap_above,
+        "vwap_bonus":          vwap_bonus,
     }
     return score, details
 
@@ -454,11 +475,26 @@ def calculate_macd(candles: list) -> tuple[float, float, float]:
     return round(macd_val, 2), round(signal_val, 2), round(macd_val - signal_val, 2)
 
 
-def is_not_overbought(candles: list) -> tuple[int, dict]:
+def is_not_overbought(candles: list, candles_4h: list | None = None) -> tuple[int, dict]:
     rsi = calculate_rsi(candles)
     macd, macd_sig, macd_hist = calculate_macd(candles)
 
     score = _score_l3(rsi, macd_hist)
+
+    # 4h RSI confirmation
+    tf4h_rsi = None
+    rsi4h_bonus = 0
+    if candles_4h and len(candles_4h) >= 15:
+        tf4h_rsi = calculate_rsi(candles_4h)
+        if 40 <= tf4h_rsi <= 65:
+            rsi4h_bonus = 2    # 4h momentum healthy — strong confirmation
+        elif tf4h_rsi > 70:
+            rsi4h_bonus = -2   # 4h overbought — high reversal risk
+        elif tf4h_rsi < 35:
+            rsi4h_bonus = -1   # 4h oversold — trend might be weak
+
+    score = min(10, max(0, score + rsi4h_bonus))
+
     details = {
         "score":       score,
         "pass":        score >= 7,
@@ -468,6 +504,8 @@ def is_not_overbought(candles: list) -> tuple[int, dict]:
         "macd_signal": macd_sig,
         "macd_hist":   macd_hist,
         "macd_ok":     macd_hist > 0,
+        "tf4h_rsi":    round(tf4h_rsi, 2) if tf4h_rsi is not None else None,
+        "rsi4h_bonus": rsi4h_bonus,
     }
     return score, details
 
@@ -658,13 +696,14 @@ def check_fear_greed(fg_data: dict) -> tuple[int, dict]:
 
 # ── Layer 10 — Buy/Sell Pressure ─────────────────────────────────────────────
 
-def check_buy_pressure(pressure_data: dict) -> tuple[int, dict]:
+def check_buy_pressure(pressure_data: dict, funding_data: dict | None = None) -> tuple[int, dict]:
     if not pressure_data.get("ok", False):
         score = 5
         return score, {
             "score": score, "pass": False,
             "buy_ratio_pct": 50.0, "net_btc": 0.0, "trend": "neutral",
             "ratio_ok": True, "net_ok": True, "skipped": True,
+            "funding_rate": None, "fr_modifier": 0,
         }
 
     ratio = pressure_data["buy_ratio_pct"]
@@ -673,6 +712,21 @@ def check_buy_pressure(pressure_data: dict) -> tuple[int, dict]:
     net_ok = net >= NET_SELL_MAX
 
     score = _score_l10(ratio, net, skipped=False)
+
+    # Funding rate modifier (BTC perp market positioning)
+    fr_modifier = 0
+    funding_rate = None
+    if funding_data and funding_data.get("ok"):
+        funding_rate = funding_data.get("funding_rate", 0.0)
+        if funding_rate < -0.02:       fr_modifier = +3   # shorts overloaded → squeeze setup
+        elif funding_rate < 0:         fr_modifier = +2   # shorts paying → long-friendly
+        elif funding_rate < 0.01:      fr_modifier = +1   # neutral → slightly bullish
+        elif funding_rate < 0.03:      fr_modifier = -1   # longs warming up
+        elif funding_rate < 0.05:      fr_modifier = -2   # longs overheating
+        else:                          fr_modifier = -3   # extreme longs → correction risk
+
+    score = min(10, max(0, score + fr_modifier))
+
     return score, {
         "score":         score,
         "pass":          score >= 7,
@@ -685,6 +739,8 @@ def check_buy_pressure(pressure_data: dict) -> tuple[int, dict]:
         "ratio_ok":      ratio_ok,
         "net_ok":        net_ok,
         "skipped":       False,
+        "funding_rate":  funding_rate,
+        "fr_modifier":   fr_modifier,
     }
 
 
@@ -707,16 +763,16 @@ def check_entry_signal(
 ) -> tuple[bool, dict]:
     l1_score, l1   = is_market_moving(candles)
     l2_score, l2   = is_uptrend(candles, candles_4h=candles_4h)
-    l3_score, l3   = is_not_overbought(candles)
+    l3_score, l3   = is_not_overbought(candles, candles_4h=candles_4h)
     l4_score, l4   = is_volume_trending(candles)
     l5_score, l5   = has_liquidity(spread, bid_depth, ask_depth, volume_24h)
     l6_score, l6   = check_risk_reward(budget, take_profit_pct, stop_loss_pct)
     l7_score, l7   = check_news_sentiment(news_summary or {})
     l8_score, l8   = check_sr_proximity(candles, tp_pct=take_profit_pct)
     l9_score, l9   = detect_candle_patterns(candles)
-    l10_score, l10 = check_buy_pressure(pressure_data or {})
+    l10_score, l10 = check_buy_pressure(pressure_data or {}, funding_data=funding_data)
 
-    # Supplementary (kept for display, no longer part of score)
+    # Supplementary display data
     _, supp_funding  = check_funding_rate(funding_data or {})
     _, supp_fg       = check_fear_greed(fg_data or {})
 

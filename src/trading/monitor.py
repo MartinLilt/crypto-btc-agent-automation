@@ -62,6 +62,7 @@ async def scanner_loop(app):
                 get_order_book_depth,
                 get_ticker_24h,
                 get_taker_buy_pressure,
+                get_funding_rate,
             )
             from src.signals.indicators import check_entry_signal
             from src.data.news_client import get_recent_news, summarise_news
@@ -81,12 +82,17 @@ async def scanner_loop(app):
                 pressure_data = get_taker_buy_pressure(SYMBOL, hours=6)
             except Exception:
                 pressure_data = {"ok": False}
+            try:
+                funding_data = get_funding_rate(SYMBOL)
+            except Exception:
+                funding_data = {"ok": False}
 
             should_enter, report = check_entry_signal(
                 candles, spread, bid_depth, ask_depth, volume_24h,
                 budget=BUDGET, take_profit_pct=2.0, stop_loss_pct=1.0,
                 news_summary=news_summary,
                 pressure_data=pressure_data,
+                funding_data=funding_data,
                 candles_4h=candles_4h,
             )
 

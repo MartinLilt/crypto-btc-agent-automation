@@ -418,20 +418,30 @@ async def _run_analysis(query, context, lang: str):
             fg_val = supp_fg.get("value", 50)
             funding_note += f"  F&G {fg_val}/100"
 
-        # L2 multi-tf note
+        # L1 ADX slope note
+        adx_note = " ↑" if l1.get("adx_rising") else " ↓" if l1.get("adx_prev", 0) > l1.get("adx", 0) else ""
+
+        # L2 multi-tf + VWAP note
         l2_tf_note = ""
         if l2.get("tf4h_ema50"):
-            aligned = l2.get("tf4h_aligned", False)
-            l2_tf_note = (" ↑4h" if aligned else " ↓4h")
+            l2_tf_note = " ↑4h" if l2.get("tf4h_aligned") else " ↓4h"
+        l2_vwap_note = " >VWAP" if l2.get("vwap_above") else " <VWAP"
+
+        # L3 4h RSI note
+        l3_4h_note = f"  4h={l3['tf4h_rsi']:.0f}" if l3.get("tf4h_rsi") is not None else ""
+
+        # L10 funding note
+        fr = l10.get("funding_rate")
+        l10_fr_note = f"  FR {fr:+.3f}%" if fr is not None else ""
 
         layer_data = [
             ("L1_volatility",    t("layer_volatility_short",   lang),
-             f"ATR ${l1['atr']:,.0f}  ADX {l1['adx']:.0f}"),
+             f"ATR ${l1['atr']:,.0f}  ADX {l1['adx']:.0f}{adx_note}"),
             ("L2_trend",         t("layer_trend_short",        lang),
              f"EMA50 ${l2.get('ema50', 0):,.0f}  "
-             f"EMA200 ${l2.get('ema200', 0):,.0f}{l2_tf_note}"),
+             f"EMA200 ${l2.get('ema200', 0):,.0f}{l2_tf_note}{l2_vwap_note}"),
             ("L3_momentum",      t("layer_momentum_short",     lang),
-             f"RSI {l3['rsi']:.1f}  MACD {l3['macd_hist']:+.1f}"),
+             f"RSI {l3['rsi']:.1f}  MACD {l3['macd_hist']:+.1f}{l3_4h_note}"),
             ("L4_vol_trend",     t("layer_vol_trend_short",    lang),
              f"×{l4.get('ratio', 1.0):.2f} vs SMA20"),
             ("L5_liquidity",     t("layer_liquidity_short",    lang),
@@ -447,7 +457,7 @@ async def _run_analysis(query, context, lang: str):
             ("L9_candle_pattern",t("layer_candle_pattern_short",lang),
              pattern_str),
             ("L10_pressure",     t("layer_pressure_short",     lang),
-             pressure_str),
+             pressure_str + l10_fr_note),
         ]
 
         total_score = report.get("total_score", 0)
@@ -455,7 +465,7 @@ async def _run_analysis(query, context, lang: str):
         lines = [f"📊 *{symbol}*   💰 ${price:,.2f}", ""]
 
         for i, (key, name, data) in enumerate(layer_data):
-            lines.append(f"{icon(key)} *{name}* `{score_str(key)}` — {data}")
+            lines.append(f"{icon(key)} *{name}* `{score_str(key)}` — {_esc(data)}")
             if i < len(ai_points):
                 comment = ai_points[i].strip().lstrip("✅❌ ")
                 lines.append(f"  _└ {comment}_")
