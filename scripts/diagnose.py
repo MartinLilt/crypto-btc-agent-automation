@@ -182,18 +182,13 @@ def check_layers():
         window = candles[-(WARMUP + 1):]
 
         # L1
-        l1_pass, l1 = is_market_moving(window)
-        if not l1_pass:
-            ae = l1.get("atr_expanding", False)
-            vs = l1.get("volume_spike",  False)
-            adx_ok = (l1.get("adx") or 0) > 20
-            l1_pass = ae and vs and adx_ok
+        l1_score, l1 = is_market_moving(window)
 
         # L2
-        l2_pass, l2 = is_uptrend(window)
+        l2_score, l2 = is_uptrend(window)
 
         # L3
-        l3_pass, l3 = is_not_overbought(window)
+        l3_score, l3 = is_not_overbought(window)
 
         # L5 (relative)
         last = window[-1]
@@ -201,10 +196,14 @@ def check_layers():
         vol24 = sum(c["volume"] * c["close"] for c in window[-24:])
         spr_ok = max(spread, 0.01) / last["close"] < 0.005
         vol_ok = vol24 >= 50_000_000
-        l5_pass = spr_ok and vol_ok
+        l5_score, _ = check_risk_reward.__class__ and (
+            (6 if vol_ok and spr_ok else 3 if spr_ok else 1), {}
+        )
+        # simpler inline score for display
+        l5_score = 6 if (spr_ok and vol_ok) else (3 if spr_ok else 1)
 
         # L6
-        l6_pass, _ = check_risk_reward(
+        l6_score, _ = check_risk_reward(
             budget=100.0, take_profit_pct=2.0, stop_loss_pct=1.0
         )
 
@@ -221,7 +220,7 @@ def check_layers():
                 "bearish" if buy_ratio < 45 else "neutral"
             ),
         }
-        l10_pass, _ = check_buy_pressure(pressure)
+        l10_score, _ = check_buy_pressure(pressure)
 
         # L2 detail
         p = l2.get("price", 0)
@@ -232,15 +231,18 @@ def check_layers():
             f"price={p:.2f} EMA50={e50:.2f} EMA200={e200:.2f} {trend}"
         )
 
+        def sc(s):
+            return f"{s:2d}/10"
+
         print(
-            f"  {sym:<10} {yn(l1_pass):>3} {yn(l2_pass):>3} "
-            f"{yn(l3_pass):>3} {yn(l5_pass):>3} {yn(l6_pass):>3} "
-            f"{yn(l10_pass):>3}  {l2_info}"
+            f"  {sym:<10} L1:{sc(l1_score)} L2:{sc(l2_score)} "
+            f"L3:{sc(l3_score)} L5:{sc(l5_score)} L6:{sc(l6_score)} "
+            f"L10:{sc(l10_score)}  {l2_info}"
         )
 
         results[sym] = {
-            "l1": l1_pass, "l2": l2_pass, "l3": l3_pass,
-            "l5": l5_pass, "l6": l6_pass, "l10": l10_pass,
+            "l1": l1_score, "l2": l2_score, "l3": l3_score,
+            "l5": l5_score, "l6": l6_score, "l10": l10_score,
             "vol24_m": round(vol24 / 1e6, 1),
             "buy_ratio": round(buy_ratio, 1),
             "atr": l1["atr"], "adx": l1["adx"],
@@ -251,24 +253,23 @@ def check_layers():
     # Summary
     section("4. Detailed blockers")
     for sym, r in results.items():
-        blockers = []
-        if not r["l1"]:
-            blockers.append(f"L1: ATR={r['atr']:.3f} ADX={r['adx']:.1f}")
-        if not r["l2"]:
-            blockers.append("L2: downtrend (price < EMA50 or EMA50 < EMA200)")
-        if not r["l3"]:
-            blockers.append(f"L3: RSI={r['rsi']:.0f} (overbought)")
-        if not r["l5"]:
-            blockers.append(
-                f"L5: vol24h=${r['vol24_m']}M (need >$50M)"
-            )
-        if not r["l10"]:
-            blockers.append(f"L10: buy_ratio={r['buy_ratio']}% (need >55%)")
+        weak = []
+        if r["l1"] < 7:
+            weak.append(f"L1:{r['l1']}/10 ATR={r['atr']:.0f} ADX={r['adx']:.1f}")
+        if r["l2"] < 7:
+            weak.append(f"L2:{r['l2']}/10 trend weak")
+        if r["l3"] < 7:
+            weak.append(f"L3:{r['l3']}/10 RSI={r['rsi']:.0f}")
+        if r["l5"] < 7:
+            weak.append(f"L5:{r['l5']}/10 vol24h=${r['vol24_m']}M")
+        if r["l10"] < 7:
+            weak.append(f"L10:{r['l10']}/10 buy_ratio={r['buy_ratio']:.1f}%")
 
-        if blockers:
-            print(f"  {FAIL} {sym}: {'; '.join(blockers)}")
+        approx_total = r["l1"] + r["l2"] + r["l3"] + r["l5"] + r["l6"] + r["l10"]
+        if weak:
+            print(f"  {WARN} {sym} (partial score ~{approx_total}/60): {'; '.join(weak)}")
         else:
-            print(f"  {OK} {sym}: all active layers PASS — would generate signals")
+            print(f"  {OK} {sym}: strong layers — likely generating signals")
 
 
 # ── 5. Summary & advice ───────────────────────────────────────────────────────

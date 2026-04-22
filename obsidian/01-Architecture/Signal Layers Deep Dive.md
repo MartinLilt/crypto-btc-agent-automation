@@ -25,14 +25,12 @@ All defined in `src/indicators.py`. Each returns `(bool, dict)`.
 - RSI in [40, 65] — not fearful (<40), not overbought (>65)
 - MACD histogram > 0 — bullish momentum confirmed
 
-## L4 — Timing (`is_good_hour`)
-**Purpose:** Enter during high-volume session windows.
-- Good UTC hours: {2, 3, 7, 8, 13, 14, 15, 20}
-  - 02-03: Asian open
-  - 07-08: London open
-  - 13-15: NY overlap (highest volume)
-  - 20: NY evening
-- Skip weekends (Sat=5, Sun=6) — lower volume, manipulation risk
+## L4 — Volume Trend (`is_volume_trending`)
+**Purpose:** Confirm market participation is increasing (not entering on thin air).
+- Compare last 4h rolling volume vs 24h average 4h bucket
+- ratio = vol_4h / (vol_24h / 6)
+- Scoring: ≥1.5→10, ≥1.2→8, ≥0.8→6, ≥0.5→3, else 1
+- Strong signal (score 8-10) means recent 4h has above-average participation
 
 ## L5 — Liquidity (`has_liquidity`)
 **Purpose:** Can we enter without getting killed by slippage?

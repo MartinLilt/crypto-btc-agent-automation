@@ -2,8 +2,9 @@
 Database layer — SQLite (persistent) + Redis (cache).
 
 SQLite tables:
-  backtest_trades  — every simulated trade from backtest runs
   backtest_runs    — metadata per backtest run (symbol, period, stats)
+  backtest_trades  — every simulated trade from backtest runs
+  positions        — live/sim positions (one open at a time)
 
 Redis keys (all with TTL):
   fg:{date}                 → Fear & Greed value for a date
@@ -185,6 +186,29 @@ def init_db():
             ON backtest_trades(entry_time);
         CREATE INDEX IF NOT EXISTS idx_trades_result
             ON backtest_trades(result);
+
+        CREATE TABLE IF NOT EXISTS positions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol        TEXT    NOT NULL,
+            mode          TEXT    NOT NULL,
+            entry_time    TEXT    NOT NULL,
+            entry_price   REAL    NOT NULL,
+            qty           REAL    NOT NULL,
+            budget        REAL    NOT NULL,
+            sl_price      REAL    NOT NULL,
+            tp_price      REAL    NOT NULL,
+            breakeven_hit INTEGER NOT NULL DEFAULT 0,
+            status        TEXT    NOT NULL DEFAULT 'open',
+            exit_price    REAL,
+            exit_time     TEXT,
+            exit_reason   TEXT,
+            pnl_pct       REAL,
+            total_score   INTEGER,
+            created_at    TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_positions_status
+            ON positions(status);
         """)
     logger.info("SQLite initialised: %s", SQLITE_PATH)
 
@@ -337,3 +361,64 @@ def get_funding_for_timestamp(symbol: str, ts_ms: int) -> Optional[float]:
             tzinfo=timezone.utc).timestamp() - target
     ), default=None)
     return closest["rate"] if closest else None
+
+
+# ── Position CRUD ─────────────────────────────────────────────────────────────
+
+def open_pos(data: dict) -> int:
+    """Insert a new open position. Returns new row id."""
+    cols = [
+        "symbol", "mode", "entry_time", "entry_price",
+        "qty", "budget", "sl_price", "tp_price", "total_score",
+    ]
+    present = {k: data[k] for k in cols if k in data}
+    placeholders = ", ".join("?" * len(present))
+    col_names = ", ".join(present.keys())
+    with _conn() as con:
+        cur = con.execute(
+            f"INSERT INTO positions ({col_names}) VALUES ({placeholders})",
+            list(present.values()),
+        )
+        return cur.lastrowid
+
+
+def get_open_pos() -> Optional[dict]:
+    """Return the single open position, or None."""
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM positions WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def close_pos(pos_id: int, exit_price: float, exit_time: str,
+              reason: str, pnl_pct: float):
+    """Mark position as closed."""
+    with _conn() as con:
+        con.execute(
+            """UPDATE positions
+               SET status='closed', exit_price=?, exit_time=?,
+                   exit_reason=?, pnl_pct=?
+               WHERE id=?""",
+            (exit_price, exit_time, reason, pnl_pct, pos_id),
+        )
+
+
+def update_pos_sl(pos_id: int, sl_price: float, breakeven_hit: bool = False):
+    """Update trailing stop level."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE positions SET sl_price=?, breakeven_hit=? WHERE id=?",
+            (sl_price, int(breakeven_hit), pos_id),
+        )
+
+
+def get_closed_positions(limit: int = 20) -> list[dict]:
+    """Return last N closed positions, newest first."""
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT * FROM positions WHERE status = 'closed'
+               ORDER BY exit_time DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]

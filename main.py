@@ -3,6 +3,8 @@ import os
 import logging
 from dotenv import load_dotenv
 
+from src.trading.modes import TradingMode
+
 from telegram import (
     Update,
     BotCommand,
@@ -256,7 +258,8 @@ async def _run_analysis(query, context, lang: str):
         from src.data.news_client import get_recent_news, summarise_news
 
         symbol = cfg["asset"]
-        candles = get_candles(symbol=symbol, interval="1h", limit=201)
+        candles    = get_candles(symbol=symbol, interval="1h", limit=250)
+        candles_4h = get_candles(symbol=symbol, interval="4h", limit=210)
         spread, _, _ = get_order_book_spread(symbol)
         bid_depth, ask_depth = get_order_book_depth(symbol)
         ticker = get_ticker_24h(symbol)
@@ -283,7 +286,7 @@ async def _run_analysis(query, context, lang: str):
             fg_data = {"ok": False}
 
         try:
-            pressure_data = get_taker_buy_pressure(symbol)
+            pressure_data = get_taker_buy_pressure(symbol, hours=6)
         except Exception as pr_err:
             logger.warning("Buy pressure fetch failed: %s", pr_err)
             pressure_data = {"ok": False}
@@ -297,6 +300,7 @@ async def _run_analysis(query, context, lang: str):
             funding_data=funding_data,
             fg_data=fg_data,
             pressure_data=pressure_data,
+            candles_4h=candles_4h,
         )
 
         ai_result = None
@@ -309,31 +313,43 @@ async def _run_analysis(query, context, lang: str):
                 logger.warning("AI orchestration skipped: %s", ai_err)
 
         layers = report["layers"]
-        l1 = layers["L1_volatility"]
-        l2 = layers["L2_trend"]
-        l3 = layers["L3_momentum"]
-        l4 = layers["L4_timing"]
-        l5 = layers["L5_liquidity"]
-        l6 = layers["L6_risk_reward"]
-        l7 = layers["L7_news"]
-        l8 = layers["L8_funding"]
-        l9 = layers["L9_fear_greed"]
+        l1  = layers["L1_volatility"]
+        l2  = layers["L2_trend"]
+        l3  = layers["L3_momentum"]
+        l4  = layers["L4_vol_trend"]
+        l5  = layers["L5_liquidity"]
+        l6  = layers["L6_risk_reward"]
+        l7  = layers["L7_news"]
+        l8  = layers["L8_sr_proximity"]
+        l9  = layers["L9_candle_pattern"]
         l10 = layers["L10_pressure"]
 
+        supp         = report.get("supplementary", {})
+        supp_funding = supp.get("funding", {})
+        supp_fg      = supp.get("fear_greed", {})
+
         def icon(key):
-            return "✅" if layers[key]["pass"] else "❌"
+            s = layers[key].get("score", 0)
+            if s >= 7:
+                return "🟢"
+            if s >= 4:
+                return "🟡"
+            return "🔴"
+
+        def score_str(key):
+            return f"{layers[key].get('score', 0)}/10"
 
         layer_short = {
-            "L1_volatility":  t("layer_volatility_short",  lang),
-            "L2_trend":       t("layer_trend_short",       lang),
-            "L3_momentum":    t("layer_momentum_short",    lang),
-            "L4_timing":      t("layer_timing_short",      lang),
-            "L5_liquidity":   t("layer_liquidity_short",   lang),
-            "L6_risk_reward": t("layer_risk_reward_short", lang),
-            "L7_news":        t("layer_news_short",        lang),
-            "L8_funding":     t("layer_funding_short",     lang),
-            "L9_fear_greed":  t("layer_fear_greed_short",  lang),
-            "L10_pressure":   t("layer_pressure_short",    lang),
+            "L1_volatility":    t("layer_volatility_short",      lang),
+            "L2_trend":         t("layer_trend_short",           lang),
+            "L3_momentum":      t("layer_momentum_short",        lang),
+            "L4_vol_trend":     t("layer_vol_trend_short",       lang),
+            "L5_liquidity":     t("layer_liquidity_short",       lang),
+            "L6_risk_reward":   t("layer_risk_reward_short",     lang),
+            "L7_news":          t("layer_news_short",            lang),
+            "L8_sr_proximity":  t("layer_sr_proximity_short",    lang),
+            "L9_candle_pattern":t("layer_candle_pattern_short",  lang),
+            "L10_pressure":     t("layer_pressure_short",        lang),
         }
 
         # AI translation
@@ -364,25 +380,21 @@ async def _run_analysis(query, context, lang: str):
             else:
                 news_str = f"{mood} +{b}b -{br}br {n}n"
 
-        # Funding rate text
+        # S/R Proximity text (L8)
+        blockers = l8.get("blocking_levels", [])
+        nearest  = l8.get("nearest_resistance")
         if l8.get("skipped"):
-            funding_str = "N/A (spot)"
+            sr_str = "no S/R detected"
+        elif not blockers:
+            sr_str = "clear path ✓" + (f"  R ${nearest:,.0f}" if nearest else "")
         else:
-            fr = l8.get("funding_rate", 0.0)
-            oi = l8.get("oi_change_pct", 0.0)
-            funding_str = f"FR {fr:+.3f}%  OI {oi:+.1f}%"
+            walls = " / ".join(f"${b:,.0f}" for b in blockers[:2])
+            sr_str = f"{len(blockers)} wall(s): {walls}"
 
-        # Fear & Greed text
-        if l9.get("skipped"):
-            fg_str = "N/A"
-        else:
-            fg_val = l9.get("value", 50)
-            fg_cls = l9.get("classification", "")
-            fg_chg = l9.get("change", 0)
-            chg_sign = "+" if fg_chg >= 0 else ""
-            fg_str = f"{fg_val}/100 {fg_cls} ({chg_sign}{fg_chg})"
+        # Candle Pattern text (L9)
+        pattern_str = l9.get("pattern", "NEUTRAL")
 
-        # Buy/Sell pressure text
+        # Buy/Sell pressure text (L10)
         if l10.get("skipped"):
             pressure_str = "N/A"
         else:
@@ -396,49 +408,81 @@ async def _run_analysis(query, context, lang: str):
                 f"{trend_icon} {ratio:.1f}% buy  net {net:+,.0f} BTC"
             )
 
+        # Supplementary display (F&G + funding — not scored)
+        if supp_funding.get("skipped"):
+            funding_note = "FR: N/A"
+        else:
+            fr = supp_funding.get("funding_rate", 0.0)
+            funding_note = f"FR {fr:+.3f}%"
+        if supp_fg.get("value"):
+            fg_val = supp_fg.get("value", 50)
+            funding_note += f"  F&G {fg_val}/100"
+
+        # L2 multi-tf note
+        l2_tf_note = ""
+        if l2.get("tf4h_ema50"):
+            aligned = l2.get("tf4h_aligned", False)
+            l2_tf_note = (" ↑4h" if aligned else " ↓4h")
+
         layer_data = [
-            ("L1_volatility",  t("layer_volatility_short",  lang),
+            ("L1_volatility",    t("layer_volatility_short",   lang),
              f"ATR ${l1['atr']:,.0f}  ADX {l1['adx']:.0f}"),
-            ("L2_trend",       t("layer_trend_short",       lang),
+            ("L2_trend",         t("layer_trend_short",        lang),
              f"EMA50 ${l2.get('ema50', 0):,.0f}  "
-             f"EMA200 ${l2.get('ema200', 0):,.0f}"),
-            ("L3_momentum",    t("layer_momentum_short",    lang),
+             f"EMA200 ${l2.get('ema200', 0):,.0f}{l2_tf_note}"),
+            ("L3_momentum",      t("layer_momentum_short",     lang),
              f"RSI {l3['rsi']:.1f}  MACD {l3['macd_hist']:+.1f}"),
-            ("L4_timing",      t("layer_timing_short",      lang),
-             f"{l4['weekday']} {l4['hour_utc']:02d}:00 UTC"),
-            ("L5_liquidity",   t("layer_liquidity_short",   lang),
+            ("L4_vol_trend",     t("layer_vol_trend_short",    lang),
+             f"×{l4.get('ratio', 1.0):.2f} vs SMA20"),
+            ("L5_liquidity",     t("layer_liquidity_short",    lang),
              ("спред" if lang == "ru" else "spread")
              + f" ${l5['spread']:.2f}"),
-            ("L6_risk_reward", t("layer_risk_reward_short", lang),
+            ("L6_risk_reward",   t("layer_risk_reward_short",  lang),
              f"+${l6['net_profit']:.2f} / -${l6['net_loss']:.2f}"
              f"  RR {l6['rr_ratio']:.2f}"),
-            ("L7_news",        t("layer_news_short",        lang),
+            ("L7_news",          t("layer_news_short",         lang),
              news_str),
-            ("L8_funding",     t("layer_funding_short",     lang),
-             funding_str),
-            ("L9_fear_greed",  t("layer_fear_greed_short",  lang),
-             fg_str),
-            ("L10_pressure",   t("layer_pressure_short",    lang),
+            ("L8_sr_proximity",  t("layer_sr_proximity_short", lang),
+             sr_str),
+            ("L9_candle_pattern",t("layer_candle_pattern_short",lang),
+             pattern_str),
+            ("L10_pressure",     t("layer_pressure_short",     lang),
              pressure_str),
         ]
 
+        total_score = report.get("total_score", 0)
         ai_verdict_icon = "🟢" if ai_verdict == "ENTER" else "🔴"
         lines = [f"📊 *{symbol}*   💰 ${price:,.2f}", ""]
 
         for i, (key, name, data) in enumerate(layer_data):
-            lines.append(f"{icon(key)} *{name}* — {data}")
+            lines.append(f"{icon(key)} *{name}* `{score_str(key)}` — {data}")
             if i < len(ai_points):
                 comment = ai_points[i].strip().lstrip("✅❌ ")
                 lines.append(f"  _└ {comment}_")
             lines.append("")
 
+        # Total score bar
+        score_icon = "🟢" if total_score >= 70 else ("🟡" if total_score >= 50 else "🔴")
+        if lang == "ru":
+            lines.append(f"{score_icon} *Итог: {total_score}/100*")
+        else:
+            lines.append(f"{score_icon} *Score: {total_score}/100*")
+
         if should_enter:
             lines.append(t("signal_enter", lang))
         else:
-            failed = [k for k, v in layers.items() if not v["pass"]]
-            failed_str = ", ".join(layer_short.get(k, k) for k in failed)
+            weak = sorted(
+                ((k, layers[k].get("score", 0)) for k in layers),
+                key=lambda x: x[1]
+            )[:3]
+            weak_str = ", ".join(
+                f"{layer_short.get(k, k)} ({s}/10)" for k, s in weak
+            )
             lines.append(t("signal_wait", lang))
-            lines.append(t("signal_failed", lang, failed=failed_str))
+            if lang == "ru":
+                lines.append(f"_Слабые слои: {weak_str}_")
+            else:
+                lines.append(f"_Weak layers: {weak_str}_")
 
         if ai_result:
             lines.append("")
@@ -524,14 +568,12 @@ def _build_market_context(symbol: str, result: dict, lang: str) -> str:
 
     # Pull last-bar snapshot from backtest engine directly
     try:
-        from src.backtest.engine import _fetch_candles_full, _eval_bar, _fetch_fear_greed_history
+        from src.backtest.engine import _fetch_candles_full, _eval_bar
         candles = _fetch_candles_full(symbol, 7)
         WIN = 220
         if len(candles) > WIN:
             window = candles[-WIN - 1:]
-            fg = _fetch_fear_greed_history()
-            snap_sig, snap = _eval_bar(
-                window, 0, fg, [], 2.0, 1.0, 0.001, symbol)
+            snap_sig, snap = _eval_bar(window, 0, 2.0, 1.0, 0.001, symbol)
         else:
             return "_(not enough data)_" if lang == "en" else "_(недостаточно данных)_"
     except Exception:
@@ -839,6 +881,107 @@ async def patterns_cmd(update: Update,
     )
 
 
+# ── /mode command ─────────────────────────────────────────────────────────────
+
+async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /mode          — show current trading mode
+    /mode sim      — switch to simulation
+    /mode live     — switch to live trading
+    """
+    lang = _lang(context)
+    args = context.args or []
+
+    if not args:
+        current = context.application.bot_data.get("trading_mode", TradingMode.SIMULATION)
+        label = "🧪 Simulation" if current == TradingMode.SIMULATION else "🔴 *LIVE TRADING*"
+        await update.message.reply_text(
+            f"Trading mode: {label}\n\nChange with `/mode sim` or `/mode live`",
+            parse_mode="Markdown",
+        )
+        return
+
+    arg = args[0].lower()
+    if arg in ("sim", "simulation"):
+        context.application.bot_data["trading_mode"] = TradingMode.SIMULATION
+        await update.message.reply_text(
+            "✅ Switched to *🧪 Simulation* mode.\n"
+            "All orders are virtual — no real trades.",
+            parse_mode="Markdown",
+        )
+    elif arg in ("live", "trading"):
+        context.application.bot_data["trading_mode"] = TradingMode.LIVE
+        await update.message.reply_text(
+            "⚠️ Switched to *🔴 LIVE* mode.\n"
+            "Real orders will be placed on Binance. Make sure API keys are set.",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            "Usage: `/mode sim` or `/mode live`",
+            parse_mode="Markdown",
+        )
+
+
+# ── /status command ───────────────────────────────────────────────────────────
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/status — show open position and recent closed trades."""
+    lang = _lang(context)
+
+    from src.trading.position import get_position
+    from src.data.db import get_closed_positions
+    from src.data.binance_client import get_current_price
+
+    pos = get_position()
+    current_mode = context.application.bot_data.get("trading_mode", TradingMode.SIMULATION)
+    mode_label = "🧪 Simulation" if current_mode == TradingMode.SIMULATION else "🔴 LIVE"
+    lines = [f"⚙️ *Mode:* {mode_label}", ""]
+
+    if pos:
+        try:
+            price = get_current_price(pos["symbol"])
+            pnl = (price - pos["entry_price"]) / pos["entry_price"] * 100
+            pnl_icon = "📈" if pnl >= 0 else "📉"
+        except Exception:
+            price = 0.0
+            pnl = 0.0
+            pnl_icon = "➡️"
+
+        lines += [
+            "📌 *Open position:*",
+            f"Symbol:  `{pos['symbol']}`",
+            f"Entry:   `${pos['entry_price']:,.2f}`",
+            f"Price:   `${price:,.2f}`",
+            f"P&L:     {pnl_icon} `{pnl:+.2f}%`",
+            f"SL:      `${pos['sl_price']:,.2f}`",
+            f"TP:      `${pos['tp_price']:,.2f}`",
+            f"Score:   `{pos.get('total_score', '?')}/100`",
+            f"Mode:    `{pos.get('mode', '?')}`",
+            "",
+        ]
+    else:
+        lines += ["_No open position._", ""]
+
+    closed = get_closed_positions(limit=5)
+    if closed:
+        lines.append("📋 *Last 5 closed:*")
+        for t in closed:
+            icon = "✅" if t.get("exit_reason") == "TP_HIT" else "🛑"
+            pnl = t.get("pnl_pct") or 0.0
+            lines.append(
+                f"{icon} `{t['symbol']}` {pnl:+.2f}%  "
+                f"_{t.get('exit_reason', '?')}_  "
+                f"`{(t.get('exit_time') or '')[:10]}`"
+            )
+    else:
+        lines.append("_No closed trades yet._")
+
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="Markdown",
+    )
+
+
 # ── Bot setup ─────────────────────────────────────────────────────────────
 async def bt_start(update: Update,
                    context: ContextTypes.DEFAULT_TYPE):
@@ -863,7 +1006,22 @@ async def post_init(app):
         BotCommand("start",    "Start / choose asset"),
         BotCommand("backtest", "Run historical backtest 📊"),
         BotCommand("patterns", "Best patterns from backtest 🔬"),
+        BotCommand("mode",     "Trading mode: /mode sim | live"),
+        BotCommand("status",   "Current position & recent trades"),
     ])
+
+    # Ensure DB has positions table
+    from src.data.db import init_db
+    init_db()
+
+    # Default to simulation mode
+    app.bot_data.setdefault("trading_mode", TradingMode.SIMULATION)
+
+    # Start background monitor loops
+    from src.trading.monitor import scanner_loop, watcher_loop
+    asyncio.create_task(scanner_loop(app))
+    asyncio.create_task(watcher_loop(app))
+    logger.info("Monitor loops started")
 
 
 def main():
@@ -883,6 +1041,10 @@ def main():
     app.add_handler(CallbackQueryHandler(analyse,       pattern="^analyse$"))
     app.add_handler(CallbackQueryHandler(
         pick_asset,    pattern="^pick_asset$"))
+
+    # ── Trading mode & status ─────────────────────────────────────────────────
+    app.add_handler(CommandHandler("mode",    mode_cmd))
+    app.add_handler(CommandHandler("status",  status_cmd))
 
     # ── Backtest ──────────────────────────────────────────────────────────────
     app.add_handler(CommandHandler("backtest", backtest_cmd))

@@ -62,9 +62,9 @@ Respond ONLY with valid JSON in this exact format:
     "✅ or ❌ One sentence about liquidity.",
     "✅ or ❌ One sentence about risk/reward and fees.",
     "✅ or ❌ One sentence about recent news sentiment.",
-    "✅ or ❌ One sentence about futures funding rate and open interest.",
-    "✅ or ❌ One sentence about the Fear & Greed index and market mood.",
-    "✅ or ❌ One sentence about buyer vs seller pressure in the last 24h."
+    "✅ or ❌ One sentence about support/resistance levels blocking the target.",
+    "✅ or ❌ One sentence about the candlestick pattern on the last 3 candles.",
+    "✅ or ❌ One sentence about buyer vs seller pressure in the last 6h."
   ],
   "conclusion": "1-2 sentence overall verdict and what to watch for next."
 }"""
@@ -75,12 +75,12 @@ def _build_user_message(symbol: str, price: float, report: dict) -> str:
     l1 = layers["L1_volatility"]
     l2 = layers["L2_trend"]
     l3 = layers["L3_momentum"]
-    l4 = layers["L4_timing"]
+    l4 = layers["L4_vol_trend"]
     l5 = layers["L5_liquidity"]
     l6 = layers["L6_risk_reward"]
     l7 = layers.get("L7_news", {})
-    l8 = layers.get("L8_funding", {})
-    l9 = layers.get("L9_fear_greed", {})
+    l8 = layers.get("L8_sr_proximity", {})
+    l9 = layers.get("L9_candle_pattern", {})
     l10 = layers.get("L10_pressure", {})
 
     asset_name = "Bitcoin" if "BTC" in symbol else "Ethereum"
@@ -120,15 +120,16 @@ def _build_user_message(symbol: str, price: float, report: dict) -> str:
         )
     )
 
+    ratio = l4.get("ratio", 1.0)
     timing_desc = (
-        f"good — {l4['weekday']} {l4['hour_utc']:02d}:00 UTC "
-        f"is an active trading session"
+        f"strong — recent 4h volume is {ratio:.2f}× the 24h average "
+        f"(market participation is elevated)"
         if l4["pass"]
         else (
-            f"not ideal — {l4['weekday']} {l4['hour_utc']:02d}:00 UTC "
-            f"is outside peak trading hours"
-            if l4["weekday_ok"]
-            else f"weekend ({l4['weekday']}) — lower volume, higher risk"
+            f"weak — recent 4h volume is only {ratio:.2f}× the 24h average "
+            f"(low participation, less conviction)"
+            if ratio >= 0.5
+            else f"very low volume ({ratio:.2f}× avg) — thin market, avoid entry"
         )
     )
 
@@ -189,36 +190,36 @@ def _build_user_message(symbol: str, price: float, report: dict) -> str:
                 f'"{h[:60]}"' for h in headlines[:2]
             )
 
-    # L8 — Funding rate + Open Interest
+    # L8 — Support / Resistance proximity
     if l8.get("skipped", False):
-        funding_desc = (
-            "futures data unavailable for this asset — "
-            "spot market only, no funding pressure"
-        )
+        sr_desc = "support/resistance data unavailable — not enough candle history"
     else:
-        fr = l8.get("funding_rate", 0.0)
-        oi_chg = l8.get("oi_change_pct", 0.0)
-        fr_mood = (
-            "neutral" if -0.02 < fr < 0.02
-            else "longs overheated — squeeze risk" if fr > 0.02
-            else "shorts overheated — potential short squeeze"
-        )
-        funding_desc = (
-            f"funding rate is {fr:+.3f}% ({fr_mood}), "
-            f"open interest changed {oi_chg:+.1f}% recently"
-        )
+        n_blockers = l8.get("n_blockers", 0)
+        nearest = l8.get("nearest_resistance")
+        tp_price = l8.get("tp_price")
+        if n_blockers == 0:
+            sr_desc = (
+                f"path to take-profit (${tp_price:,.2f}) is clear — "
+                f"no resistance walls detected"
+            )
+        else:
+            blocking = l8.get("blocking_levels", [])
+            sr_desc = (
+                f"{n_blockers} resistance level(s) blocking the path to TP "
+                f"(nearest ${nearest:,.2f})"
+                + (f"; levels: {blocking}" if blocking else "")
+            )
 
-    # L9 — Fear & Greed Index
+    # L9 — Candlestick pattern
     if l9.get("skipped", False):
-        fg_desc = "Fear & Greed index unavailable — assuming neutral market mood"
+        candle_desc = "not enough candle data to detect a pattern"
     else:
-        fg_val = l9.get("value", 50)
-        fg_class = l9.get("classification", "Neutral")
-        fg_chg = l9.get("change", 0)
-        direction = "improving" if fg_chg > 0 else "worsening" if fg_chg < 0 else "stable"
-        fg_desc = (
-            f"Fear & Greed is {fg_val}/100 ({fg_class}), "
-            f"{direction} by {abs(fg_chg)} points vs yesterday"
+        pattern = l9.get("pattern", "UNKNOWN")
+        description = l9.get("description", "")
+        body_pct = l9.get("body_pct", 0)
+        candle_desc = (
+            f"{pattern.replace('_', ' ').title()} — {description} "
+            f"(body {body_pct:.0f}% of candle range)"
         )
 
     # L10 — Buy/Sell pressure
@@ -258,8 +259,8 @@ Here is what the 10 analysis checks found:
 5. Liquidity: {liquidity_desc}
 6. Risk/Reward: {rr_desc}
 7. News sentiment: {news_desc}
-8. Futures market: {funding_desc}
-9. Market mood: {fg_desc}
+8. Support/Resistance: {sr_desc}
+9. Candle pattern: {candle_desc}
 10. Buy/Sell pressure: {pressure_desc}
 
 Overall: {passed} out of 10 checks passed.

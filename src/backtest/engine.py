@@ -25,34 +25,30 @@ import requests
 from dotenv import load_dotenv
 
 from src.data.db import (
-    cache_fear_greed_history,
-    cache_funding_history,
-    get_fear_greed_for_date,
-    get_funding_for_timestamp,
     init_db,
     save_backtest_run,
     save_backtest_trades,
 )
 from src.signals.indicators import (
     check_buy_pressure,
-    check_fear_greed,
-    check_funding_rate,
     check_risk_reward,
     is_market_moving,
     is_not_overbought,
     is_uptrend,
     GOOD_HOURS_UTC,
     SKIP_WEEKDAYS,
+    ENTRY_SCORE_THRESHOLD,
+    _score_l1,
+    _score_l5,
+    _score_l10,
 )
+from src.signals.support_resistance import check_sr_proximity
+from src.signals.candle_patterns import detect_candle_patterns
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 _BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
-_BINANCE_FUTURES = os.getenv(
-    "BINANCE_FUTURES_URL", "https://fapi.binance.com")
-_FEAR_GREED_URL = os.getenv(
-    "FEAR_GREED_URL", "https://api.alternative.me/fng/?limit=2")
 
 MAX_HOLD_HOURS = 48     # exit timeout if neither TP nor SL hit
 WARMUP_CANDLES = 210    # need 200+ for EMA-200
@@ -184,108 +180,87 @@ def _fetch_funding_history(symbol: str) -> list:
 # ── 2. Per-bar layer evaluation ───────────────────────────────────────────────
 
 def _eval_bar(candles_window: list, ts_ms: int,
-              fg_history: dict, funding_history: list,
               tp_pct: float, sl_pct: float,
               spread_approx: float, symbol: str) -> tuple[bool, dict]:
     """
     Run all layers on a window of candles ending at index i.
     Returns (signal: bool, layer_snapshot: dict)
     """
-    # L1 — Volatility (relative version: skip fixed $500 ATR threshold,
-    #       use ATR-expanding + volume-spike + ADX only)
-    l1_pass, l1 = is_market_moving(candles_window)
-    if not l1_pass:
-        atr_expanding = l1.get("atr_expanding", False)
-        volume_spike = l1.get("volume_spike", False)
-        adx_ok = (l1.get("adx") or 0) > 20
-        l1_pass = atr_expanding and volume_spike and adx_ok
-        l1["relative_override"] = l1_pass
+    # L1 — Volatility (score-based, relaxed ADX floor for backtest)
+    l1_score, l1 = is_market_moving(candles_window)
+    if l1_score < 4:
+        # Re-score with relaxed ADX floor (20 instead of 25)
+        adx = l1.get("adx", 0)
+        override_score = _score_l1(max(adx, 20.1) if adx >= 20 else adx,
+                                   l1.get("atr_expanding", False),
+                                   l1.get("volume_spike", False))
+        l1_score = max(l1_score, override_score)
+        l1["bt_override_score"] = l1_score
 
-    # L2 — Trend (relaxed for backtest: allow sideways, block only hard downtrend)
-    l2_pass, l2 = is_uptrend(candles_window)
-    if not l2_pass:
+    # L2 — Trend (relaxed for backtest: give partial credit for price > EMA50)
+    l2_score, l2 = is_uptrend(candles_window)
+    if l2_score < 4:
         price_ok = l2.get("price", 0) > l2.get("ema50", 0)
         slope_ok = l2.get("ema50_slope_ok", False)
-        l2_pass = price_ok or slope_ok
-        l2["relaxed_override"] = l2_pass
+        if price_ok or slope_ok:
+            l2_score = max(l2_score, 4)
+            l2["bt_override_score"] = l2_score
 
     # L3 — Momentum
-    l3_pass, l3 = is_not_overbought(candles_window)
+    l3_score, l3 = is_not_overbought(candles_window)
 
-    # L4 — Timing: skip in backtest (would cut ~67% of bars on good-hours filter)
-    l4_pass = True
+    # L4 — Timing: neutral score in backtest (don't penalise off-hours)
+    l4_score = 5
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
     l4 = {
-        "hour_utc": dt.hour,
-        "weekday": dt.strftime("%A"),
-        "hour_ok": dt.hour in GOOD_HOURS_UTC,
+        "score":      l4_score,
+        "pass":       True,
+        "hour_utc":   dt.hour,
+        "weekday":    dt.strftime("%A"),
+        "hour_ok":    dt.hour in GOOD_HOURS_UTC,
         "weekday_ok": dt.weekday() not in SKIP_WEEKDAYS,
-        "skipped": True,
+        "skipped":    True,
     }
 
-    # L5 — Liquidity (BTC: $30M/24h floor)
+    # L5 — Liquidity (BTC: $30M/24h floor, score-based)
     last = candles_window[-1]
     approx_spread = (last["high"] - last["low"]) * 0.1
-    volume_24h = sum(
-        c["volume"] * c["close"] for c in candles_window[-24:]
-    )
-    MIN_VOL = 30_000_000
-    spread_ok = max(approx_spread, 0.01) / last["close"] < 0.005  # <0.5%
-    vol_ok = volume_24h >= MIN_VOL
-    l5_pass = spread_ok and vol_ok
+    volume_24h = sum(c["volume"] * c["close"] for c in candles_window[-24:])
+    spread_ok = max(approx_spread, 0.01) / last["close"] < 0.005
+    vol_ok = volume_24h >= 30_000_000
+    l5_score = _score_l5(approx_spread, spread_ok and vol_ok, volume_24h)
     l5 = {
-        "spread": round(approx_spread, 6),
-        "spread_ok": spread_ok,
-        "volume_24h_usd": round(volume_24h, 2),
-        "volume_ok": vol_ok,
-        "min_volume_usd": MIN_VOL,
+        "score":           l5_score,
+        "pass":            l5_score >= 7,
+        "spread":          round(approx_spread, 6),
+        "spread_ok":       spread_ok,
+        "volume_24h_usd":  round(volume_24h, 2),
+        "volume_ok":       vol_ok,
+        "min_volume_usd":  30_000_000,
     }
 
     # L6 — Risk/Reward
-    l6_pass, l6 = check_risk_reward(
+    l6_score, l6 = check_risk_reward(
         budget=100.0,
         take_profit_pct=tp_pct,
         stop_loss_pct=sl_pct,
     )
 
-    # L7 — News: always skip in backtest
-    l7_pass = True
-    l7 = {"pass": True, "skipped": True, "total": 0}
+    # L7 — News: neutral in backtest
+    l7_score = 5
+    l7 = {"score": l7_score, "pass": True, "skipped": True, "total": 0}
 
-    # L8 — Funding Rate (from Redis history)
-    rate = get_funding_for_timestamp(symbol, ts_ms)
-    if rate is not None:
-        funding_data = {
-            "ok": True,
-            "funding_rate": rate,
-            "oi_change_pct": 0.0,   # not available in history
-        }
-    else:
-        funding_data = {"ok": False}
-    l8_pass, l8 = check_funding_rate(funding_data)
+    # L8 — S/R Proximity (computed from candle window — no external data needed)
+    l8_score, l8 = check_sr_proximity(candles_window, tp_pct=tp_pct)
 
-    # L9 — Fear & Greed: recorded as info, not a blocker in backtest.
-    date_str = dt.strftime("%Y-%m-%d")
-    fg_val = fg_history.get(date_str)
-    if fg_val is not None:
-        _, l9 = check_fear_greed({
-            "ok": True,
-            "value": fg_val,
-            "classification": _fg_class(fg_val),
-            "change": 0,
-        })
-        l9["skipped"] = True   # record data but don't block
-    else:
-        _, l9 = check_fear_greed({"ok": False})
-        l9["skipped"] = True
-    l9_pass = True   # always pass in backtest
+    # L9 — Candle Pattern (last 3 candles of window)
+    l9_score, l9 = detect_candle_patterns(candles_window)
 
-    # L10 — Buy Pressure (taker_buy_vol from klines)
-    total_vol = sum(c["volume"] for c in candles_window[-24:]) or 1
-    buy_vol = sum(c["taker_buy_vol"] for c in candles_window[-24:])
-    sell_vol = total_vol - buy_vol
+    # L10 — Buy Pressure (6h lookback — more reactive than 24h)
+    total_vol = sum(c["volume"] for c in candles_window[-6:]) or 1
+    buy_vol = sum(c["taker_buy_vol"] for c in candles_window[-6:])
     buy_ratio = buy_vol / total_vol * 100
-    net_vol = buy_vol - sell_vol
+    net_vol = buy_vol - (total_vol - buy_vol)
     pressure_data = {
         "ok": True,
         "buy_ratio_pct": buy_ratio,
@@ -295,16 +270,16 @@ def _eval_bar(candles_window: list, ts_ms: int,
             "bearish" if buy_ratio < 45 else "neutral"
         ),
     }
-    l10_pass, l10 = check_buy_pressure(pressure_data)
+    l10_score, l10 = check_buy_pressure(pressure_data)
 
-    all_pass = all([
-        l1_pass, l2_pass, l3_pass, l4_pass, l5_pass,
-        l6_pass, l7_pass, l8_pass, l9_pass, l10_pass,
-    ])
+    total_score = (l1_score + l2_score + l3_score + l4_score + l5_score +
+                   l6_score + l7_score + l8_score + l9_score + l10_score)
+    all_pass = total_score >= ENTRY_SCORE_THRESHOLD
 
     snapshot = {
         "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
         "l6": l6, "l7": l7, "l8": l8, "l9": l9, "l10": l10,
+        "total_score": total_score,
         "weekday": dt.strftime("%A"),
         "hour_utc": dt.hour,
         "entry_time": dt.isoformat(),
@@ -463,10 +438,8 @@ def run_backtest(
     logger.info("Starting backtest: %s %dd TP=%.1f%% SL=%.1f%%",
                 symbol, days, tp_pct, sl_pct)
 
-    # Fetch data
+    # Fetch data (no external F&G / funding needed — L8/L9 use candle data)
     candles = _fetch_candles_full(symbol, days, interval)
-    fg_history = _fetch_fear_greed_history()
-    funding_history = _fetch_funding_history(symbol)
 
     total_candles = len(candles) - WARMUP_CANDLES
     trades_raw = []
@@ -477,7 +450,7 @@ def run_backtest(
         ts_ms = candles[i]["open_time_ms"]
 
         signal, snapshot = _eval_bar(
-            window, ts_ms, fg_history, funding_history,
+            window, ts_ms,
             tp_pct, sl_pct, 0.0, symbol,
         )
 
@@ -488,11 +461,11 @@ def run_backtest(
         if outcome["result"] == "NO_DATA":
             continue
 
-        l1 = snapshot["l1"]
-        l2 = snapshot["l2"]
-        l3 = snapshot["l3"]
-        l8 = snapshot["l8"]
-        l9 = snapshot["l9"]
+        l1  = snapshot["l1"]
+        l2  = snapshot["l2"]
+        l3  = snapshot["l3"]
+        l8  = snapshot["l8"]
+        l9  = snapshot["l9"]
         l10 = snapshot["l10"]
 
         trade = {
@@ -502,30 +475,30 @@ def run_backtest(
             "weekday":      snapshot["weekday"],
             "hour_utc":     snapshot["hour_utc"],
             # Layer snapshots
-            "l1_atr":       l1.get("atr"),
-            "l1_adx":       l1.get("adx"),
-            "l2_ema50":     l2.get("ema50"),
-            "l2_ema200":    l2.get("ema200"),
-            "l2_gap_pct":   l2.get("gap_pct"),
-            "l3_rsi":       l3.get("rsi"),
-            "l3_macd_hist": l3.get("macd_hist"),
-            "l4_pass":      1,
+            "l1_atr":        l1.get("atr"),
+            "l1_adx":        l1.get("adx"),
+            "l2_ema50":      l2.get("ema50"),
+            "l2_ema200":     l2.get("ema200"),
+            "l2_gap_pct":    l2.get("gap_pct"),
+            "l3_rsi":        l3.get("rsi"),
+            "l3_macd_hist":  l3.get("macd_hist"),
+            "l4_pass":       1,
             "l5_spread_pct": (
                 snapshot["l5"].get("spread", 0) /
                 candles[i]["close"] * 100
             ),
-            "l6_rr_ratio":  snapshot["l6"].get("rr_ratio"),
-            "l8_funding":   l8.get("funding_rate"),
-            "l8_oi_chg":    l8.get("oi_change_pct"),
-            "l9_fg_value":  l9.get("value"),
+            "l6_rr_ratio":   snapshot["l6"].get("rr_ratio"),
+            "l8_funding":    l8.get("score"),          # S/R score stored here
+            "l8_oi_chg":     l8.get("n_blockers", 0),  # number of S/R blockers
+            "l9_fg_value":   l9.get("score"),           # candle pattern score
             "l10_buy_ratio": l10.get("buy_ratio_pct"),
-            "l10_net_vol":  l10.get("net_btc"),
+            "l10_net_vol":   l10.get("net_btc"),
             # Outcome
-            "result":       outcome["result"],
-            "exit_price":   outcome["exit_price"],
-            "exit_time":    outcome["exit_time"],
-            "pnl_pct":      outcome["pnl_pct"],
-            "hold_hours":   outcome["hold_hours"],
+            "result":        outcome["result"],
+            "exit_price":    outcome["exit_price"],
+            "exit_time":     outcome["exit_time"],
+            "pnl_pct":       outcome["pnl_pct"],
+            "hold_hours":    outcome["hold_hours"],
             "max_drawdown_pct": outcome["max_drawdown_pct"],
         }
         trades_raw.append(trade)

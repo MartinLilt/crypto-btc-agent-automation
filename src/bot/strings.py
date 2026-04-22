@@ -225,9 +225,9 @@ STRINGS = {
         "en": "Momentum  ",
         "ru": "Импульс   ",
     },
-    "layer_timing": {
-        "en": "Timing    ",
-        "ru": "Тайминг   ",
+    "layer_vol_trend": {
+        "en": "Vol.Trend ",
+        "ru": "Объём↑↓   ",
     },
     "layer_liquidity": {
         "en": "Liquidity ",
@@ -241,13 +241,13 @@ STRINGS = {
         "en": "News      ",
         "ru": "Новости   ",
     },
-    "layer_funding": {
-        "en": "Funding   ",
-        "ru": "Фандинг   ",
+    "layer_sr_proximity": {
+        "en": "S/R Level ",
+        "ru": "Уровни S/R",
     },
-    "layer_fear_greed": {
-        "en": "Fear/Greed",
-        "ru": "Страх/Жад.",
+    "layer_candle_pattern": {
+        "en": "Candle    ",
+        "ru": "Свеча     ",
     },
     "layer_pressure": {
         "en": "Buy/Sell  ",
@@ -257,12 +257,12 @@ STRINGS = {
     "layer_volatility_short":  {"en": "Volatility",   "ru": "Волатильность"},
     "layer_trend_short":       {"en": "Trend",         "ru": "Тренд"},
     "layer_momentum_short":    {"en": "Momentum",      "ru": "Импульс"},
-    "layer_timing_short":      {"en": "Timing",        "ru": "Тайминг"},
+    "layer_vol_trend_short":   {"en": "Vol.Trend",     "ru": "Объём тренд"},
     "layer_liquidity_short":   {"en": "Liquidity",     "ru": "Ликвидность"},
     "layer_risk_reward_short": {"en": "Risk/Reward",   "ru": "Риск/Доход"},
     "layer_news_short":        {"en": "News",          "ru": "Новости"},
-    "layer_funding_short":     {"en": "Funding Rate",  "ru": "Фандинг"},
-    "layer_fear_greed_short":  {"en": "Fear & Greed",  "ru": "Страх/Жадность"},
+    "layer_sr_proximity_short":   {"en": "S/R Proximity",   "ru": "Уровни S/R"},
+    "layer_candle_pattern_short": {"en": "Candle Pattern", "ru": "Свечной паттерн"},
     "layer_pressure_short":    {"en": "Buy Pressure",  "ru": "Давление"},
     "signal_enter": {
         "en": "🚀 *SIGNAL: ENTER — all layers passed!*",
