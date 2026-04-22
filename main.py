@@ -1018,81 +1018,86 @@ async def menu_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _format_research_msg(results: list, symbol: str, budget: float,
-                         lang: str) -> str:
-    """Format research grid-search results into a Telegram MarkdownV2 message."""
+def _fmt_pct(v: float) -> str:
+    """2.0 → '2', 2.5 → '2.5', 0.75 → '0.75'"""
+    return f"{v:.2f}".rstrip("0").rstrip(".")
+
+
+def _project_budget(net_pct: float, days: int, budget: float) -> float:
+    """Annualised $ return for a given budget (per-trade capital)."""
+    return net_pct / 100.0 * budget * 365 / max(days, 1)
+
+
+def _format_research_msg(results: list, symbol: str, lang: str) -> str:
+    """Format research grid results — plain Markdown (not V2)."""
     be_icon = lambda wr, be: "✅" if wr >= be + 5 else ("⚠️" if wr >= be else "❌")
 
-    if lang == "ru":
-        header = f"🧪 *Исследование — {_esc(symbol)}* \\(бюджет ${_esc(f'{budget:,.0f}')}\\)\n\n"
-    else:
-        header = f"🧪 *Research — {_esc(symbol)}* \\(budget ${_esc(f'{budget:,.0f}')}\\)\n\n"
+    header = f"🧪 *{'Исследование' if lang == 'ru' else 'Research'} — {symbol}*\n\n"
 
-    # Filter profitable or near-break-even
     valid = [r for r in results if r["total_signals"] >= 3]
     if not valid:
-        return header + ("_Нет данных для анализа\\._" if lang == "ru"
-                        else "_No data to analyse\\._")
+        return header + ("_Нет данных для анализа._" if lang == "ru"
+                         else "_No data to analyse._")
 
-    best_sharpe  = valid[0]
-    best_annual  = max(valid, key=lambda r: r["annual_usd"])
+    # Rank by Sharpe (already sorted); also find best by net_pct
+    best_sharpe = valid[0]
+    best_net    = max(valid, key=lambda r: r["total_pnl_after_tax_pct"])
 
     lines = [header]
-
-    # Top 5 by Sharpe
-    label = "🏆 *Топ\\-5 по Sharpe:*\n" if lang == "ru" else "🏆 *Top\\-5 by Sharpe:*\n"
+    label = "🏆 *Топ-5 по Sharpe:*\n" if lang == "ru" else "🏆 *Top-5 by Sharpe:*\n"
     lines.append(label)
-    medals = ["🥇", "🥈", "🥉", "4\\.", "5\\."]
+    medals = ["🥇", "🥈", "🥉", "4.", "5."]
     for idx, r in enumerate(valid[:5]):
-        sl_str = f"{r['sl_pct']:.2f}".rstrip("0").rstrip(".")
-        icon   = be_icon(r["win_rate_pct"], r["breakeven_wr_fees"])
-        ann    = _esc(f"{r['annual_usd']:+.0f}")
-        wr     = _esc(f"{r['win_rate_pct']:.1f}")
-        sh     = _esc(f"{r['sharpe_ratio']:.1f}")
-        sig    = r["total_signals"]
+        tp   = _fmt_pct(r["tp_pct"])
+        sl   = _fmt_pct(r["sl_pct"])
+        icon = be_icon(r["win_rate_pct"], r["breakeven_wr_fees"])
         lines.append(
-            f"{medals[idx]} TP {r['tp_pct']}% / SL {sl_str}% — {r['days']}d\n"
-            f"   {icon} WR {wr}%  \\|  ${ann}/yr  \\|  Sharpe {sh}  \\|  {sig} signals"
+            f"{medals[idx]} TP {tp}% / SL {sl}% — {r['days']}d\n"
+            f"   {icon} WR {r['win_rate_pct']:.1f}%"
+            f"  |  net {r['total_pnl_after_tax_pct']:+.1f}%"
+            f"  |  Sharpe {r['sharpe_ratio']:.1f}"
+            f"  |  {r['total_signals']} signals"
         )
     lines.append("")
 
-    # Recommendation
-    sl_b = f"{best_annual['sl_pct']:.2f}".rstrip("0").rstrip(".")
-    sl_s = f"{best_sharpe['sl_pct']:.2f}".rstrip("0").rstrip(".")
-    ann_best  = _esc(f"{best_annual['annual_usd']:+.0f}")
-    sh_best   = _esc(f"{best_sharpe['sharpe_ratio']:.1f}")
+    # Best combination summary
+    tp_n = _fmt_pct(best_net["tp_pct"])
+    sl_n = _fmt_pct(best_net["sl_pct"])
+    tp_s = _fmt_pct(best_sharpe["tp_pct"])
+    sl_s = _fmt_pct(best_sharpe["sl_pct"])
     if lang == "ru":
-        lines.append("💡 *Вывод:*")
-        lines.append(
-            f"  Макс доход:   TP {best_annual['tp_pct']}% / SL {sl_b}% "
-            f"\\({best_annual['days']}d\\)  →  ${ann_best}/yr"
-        )
-        lines.append(
-            f"  Стабильнее:  TP {best_sharpe['tp_pct']}% / SL {sl_s}% "
-            f"\\({best_sharpe['days']}d\\)  →  Sharpe {sh_best}"
-        )
+        lines.append("💡 *Лучшие комбинации:*")
+        lines.append(f"  Макс прибыль: TP {tp_n}% / SL {sl_n}% ({best_net['days']}d)"
+                     f"  →  {best_net['total_pnl_after_tax_pct']:+.1f}% чистых")
+        lines.append(f"  Стабильнее:   TP {tp_s}% / SL {sl_s}% ({best_sharpe['days']}d)"
+                     f"  →  Sharpe {best_sharpe['sharpe_ratio']:.1f}")
     else:
-        lines.append("💡 *Recommendation:*")
-        lines.append(
-            f"  Best income:   TP {best_annual['tp_pct']}% / SL {sl_b}% "
-            f"\\({best_annual['days']}d\\)  →  ${ann_best}/yr"
-        )
-        lines.append(
-            f"  Most stable:  TP {best_sharpe['tp_pct']}% / SL {sl_s}% "
-            f"\\({best_sharpe['days']}d\\)  →  Sharpe {sh_best}"
-        )
+        lines.append("💡 *Best combinations:*")
+        lines.append(f"  Max profit:   TP {tp_n}% / SL {sl_n}% ({best_net['days']}d)"
+                     f"  →  {best_net['total_pnl_after_tax_pct']:+.1f}% net")
+        lines.append(f"  Most stable:  TP {tp_s}% / SL {sl_s}% ({best_sharpe['days']}d)"
+                     f"  →  Sharpe {best_sharpe['sharpe_ratio']:.1f}")
+    lines.append("")
+
+    # Budget projection table for best_net combination
+    proj_label = "💰 *Прогноз по бюджету (лучшая комбинация):*\n" if lang == "ru" \
+                 else "💰 *Budget projection (best combo):*\n"
+    lines.append(proj_label)
+    for bud in BT_BUDGETS:
+        annual = _project_budget(
+            best_net["total_pnl_after_tax_pct"], best_net["days"], bud)
+        lines.append(f"  ${bud:>5,} / trade  →  ${annual:+.0f} / year")
 
     return "\n".join(lines)
 
 
 async def research_asset_chosen(update: Update,
                                 context: ContextTypes.DEFAULT_TYPE):
-    """Asset selected → run research grid."""
+    """Asset selected → run full automatic research grid."""
     query = update.callback_query
     await query.answer()
     lang   = _lang(context)
     symbol = query.data[len("res_asset_"):]
-    budget = float(context.user_data.get("bt_budget", 1000.0))
 
     await query.edit_message_text(
         t("research_running", lang, symbol=symbol),
@@ -1103,7 +1108,7 @@ async def research_asset_chosen(update: Update,
         from src.backtest.engine import run_backtest_research
         loop    = asyncio.get_event_loop()
         results = await loop.run_in_executor(
-            None, lambda: run_backtest_research(symbol, budget)
+            None, lambda: run_backtest_research(symbol)
         )
     except Exception as err:
         logger.exception("Research failed")
@@ -1113,7 +1118,7 @@ async def research_asset_chosen(update: Update,
         )
         return
 
-    msg = _format_research_msg(results, symbol, budget, lang)
+    msg = _format_research_msg(results, symbol, lang)
     if len(msg) > 4090:
         msg = msg[:4087] + "…"
 
@@ -1124,7 +1129,7 @@ async def research_asset_chosen(update: Update,
             t("btn_change_asset", lang), callback_data="menu_research")],
     ])
     await query.edit_message_text(
-        msg, parse_mode="MarkdownV2", reply_markup=keyboard,
+        msg, parse_mode="Markdown", reply_markup=keyboard,
     )
 
 

@@ -640,13 +640,13 @@ def run_backtest(
 
 def run_backtest_research(
     symbol: str,
-    budget: float = 1000.0,
     interval: str = "1h",
 ) -> list[dict]:
     """
-    Run all RESEARCH_TP_SL × RESEARCH_PERIODS combinations.
+    Run all RESEARCH_TP_SL × RESEARCH_PERIODS combinations automatically.
     Fetches candles once for the longest period, slices for shorter ones.
     Returns list of result dicts sorted by Sharpe ratio descending.
+    Budget is NOT a parameter — results are in % so callers can project any budget.
     """
     init_db()
     max_days = max(RESEARCH_PERIODS)
@@ -663,9 +663,7 @@ def run_backtest_research(
         for tp_pct, sl_pct in RESEARCH_TP_SL:
             trades_raw, total_candles = _run_window_loop(
                 symbol, candles, weekly, tp_pct, sl_pct)
-            stats    = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
-            scale    = budget / 100.0
-            annual   = stats["total_pnl_after_tax_pct"] * scale * 365 / max(days, 1)
+            stats     = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
             date_from = trades_raw[0]["entry_time"][:10]  if trades_raw else "—"
             date_to   = trades_raw[-1]["entry_time"][:10] if trades_raw else "—"
 
@@ -674,16 +672,14 @@ def run_backtest_research(
                 "days":      days,
                 "tp_pct":    tp_pct,
                 "sl_pct":    sl_pct,
-                "budget":    budget,
                 "date_from": date_from,
                 "date_to":   date_to,
-                "annual_usd": round(annual, 2),
                 **stats,
             })
             logger.info(
-                "Research %s TP=%.1f SL=%.2f %dd → WR=%.1f%% annual=$%.0f",
+                "Research %s TP=%.1f SL=%.2f %dd → WR=%.1f%% net_pct=%.2f%%",
                 symbol, tp_pct, sl_pct, days,
-                stats["win_rate_pct"], annual,
+                stats["win_rate_pct"], stats["total_pnl_after_tax_pct"],
             )
 
     results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)

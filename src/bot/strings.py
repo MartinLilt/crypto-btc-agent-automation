@@ -297,13 +297,13 @@ STRINGS = {
     "research_pick_asset": {
         "en": (
             "🧪 *Research* — choose asset:\n\n"
-            "_Runs 12 combinations: 4 TP/SL pairs × 3 periods (90d / 180d / 365d)._\n"
-            "_Takes about 60 seconds._"
+            "_Automatically tests all combinations: 4 TP/SL pairs × 3 periods (90d / 180d / 365d)._\n"
+            "_Shows best combo + budget projections. Takes ~60 seconds._"
         ),
         "ru": (
             "🧪 *Исследование* — выбери актив:\n\n"
-            "_Запустит 12 комбинаций: 4 пары TP/SL × 3 периода (90 / 180 / 365 дней)._\n"
-            "_Займёт около 60 секунд._"
+            "_Автоматически проверит все комбинации: 4 пары TP/SL × 3 периода (90 / 180 / 365 дней)._\n"
+            "_Покажет лучшую комбинацию и прогноз по бюджетам. Займёт ~60 секунд._"
         ),
     },
     "research_running": {

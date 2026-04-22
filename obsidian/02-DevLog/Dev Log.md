@@ -4,6 +4,73 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-22 — Simulator overhaul: fees/tax, TP picker, ADX filter, Research mode
+
+**Summary:** Major simulator upgrade — correct Lithuanian tax calculation, TP/SL selection, ADX danger zone filter (data-driven), weekly EMA21 macro filter, local Ollama LLM replacing OpenAI, and new Research grid-search feature.
+
+### Lithuanian tax fix (`src/backtest/engine.py`)
+- Tax was incorrectly applied per winning trade; now applied on **net annual profit** (losses offset gains)
+- Formula: `lt_tax = max(0, total_pnl_net_fees) * 0.15`
+- Added `BINANCE_FEE_PCT = 0.1` (0.2% round-trip) and `LT_TAX_RATE = 0.15` constants
+- `_simulate_trade` returns `pnl_pct_net_fees` (after fees); no per-trade tax
+- `_calc_stats` shows: `total_pnl_net_fees_pct`, `total_pnl_after_tax_pct`, `lt_tax_pct`, `breakeven_wr_fees`
+
+### Weekly EMA21 macro filter
+- `_build_weekly_ema21_index(candles)` — O(n) pre-computation of weekly EMA21 per hourly bar
+- Hard block in `_eval_bar`: price < weekly EMA21 → skip entry (macro bear regime)
+- Same filter added to `check_entry_signal()` in `indicators.py` (live trading)
+- Added `candles_1w` fetch in `monitor.py` and `main.py` (live analysis)
+- Result: 365d Apr–Oct 2025 improved from 44% WR / +$15 → validated
+
+### ADX danger zone filter (data-driven, 318 trades analysed)
+- Pattern analysis revealed: ADX 25–40 = WR 5–33% vs ADX <25 or >40 = WR 54%+
+- Hard block: `25 <= adx < 40` in both `_eval_bar` (backtest) and `check_entry_signal` (live)
+- Message shown: "ADX X in danger zone 25–40 (backtest WR 5–33%)"
+- Effect on bad period (Oct 2025–Feb 2026): -$41 → -$3 loss (93% reduction)
+
+### Simulator TP/SL picker (`main.py`, `src/bot/strings.py`)
+- New flow: Asset → Period → Budget → **TP picker** → Run
+- TP options: 1% / 1.5% / 2% / 3% / 5%; SL auto = TP ÷ 2 (RR 2:1)
+- Callback chain: `bt_period_` → `bt_budget_` → `bt_tp_` → run
+- Result header now shows: `$250  TP 2.0% / SL 1%`
+- Removed `{be_tax}` from template (tax now aggregate, not per-trade break-even)
+
+### Research feature (new) (`src/backtest/engine.py`, `main.py`)
+- New main menu button: 🧪 Research
+- `run_backtest_research(symbol, budget)` — grid search: 4 TP/SL pairs × 3 periods = 12 runs
+- Fetches candles **once** for 365d, slices for 180d/90d — no repeated Binance calls
+- `_run_window_loop()` extracted as shared helper (used by both `run_backtest` and research)
+- Results ranked by Sharpe ratio; shows top-5 + recommendation (best income / most stable)
+- TP/SL pairs: (1.5/0.75), (2.0/1.0), (2.5/1.0), (3.0/1.5)
+
+### Pattern analyzer enhancements (`src/signals/pattern_analyzer.py`)
+- Added `_by_adx_band()` — WR by ADX zone (5 bands)
+- Added `_by_score_band()` — WR by entry score threshold
+- Added `_virtual_threshold_test()` — simulates WR at score ≥ 55/60/65/70/75/80
+- Added RSI bands and ADX bands to `format_patterns_message()`
+- `total_score` and `pnl_pct_net_fees` now saved to `backtest_trades` table
+
+### DB schema migration (`src/data/db.py`)
+- `init_db()` now runs ALTER TABLE migration for `total_score` and `pnl_pct_net_fees` columns
+- `save_backtest_trades` cols updated to include both new fields
+
+### Local Ollama LLM (`src/ai/orchestrator.py`)
+- Replaced OpenAI API with local Ollama (model: `qwen2.5:3b` in Docker, `llama3.2:latest` locally)
+- `OLLAMA_HOST` env var (default `http://localhost:11434`)
+- `ai_review()` — structured JSON verdict for live analysis
+- `ai_review_simulation()` — plain text paragraph for backtest results
+- Removed `translate_to_russian()` function
+- `docker-compose.yml`: added `ollama` service, auto-pulls model on start
+
+### Backtest findings (key results)
+| Period | Filter | WR | After-tax $500 |
+|--------|--------|----|----------------|
+| 365d bull (Apr–Oct 2025) | ADX filter | 47.4% | +$18/yr |
+| 180d bear (Oct 2025–Feb 2026) | ADX filter | 37.5% | -$3 |
+| 180d bear | No filter | 21.4% | -$41 |
+
+---
+
 ## 2026-04-22 — BTC signal quality overhaul: 9 enhancements + profitable backtest validation
 
 **Summary:** 9 BTC-specific signal improvements added, plus 2 hard-filter blockers. Backtest validated: 50% WR, +7% PnL over 90 days. System now profitable at RR 2:1.
