@@ -4,6 +4,28 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-22 — Research redesigned: fully automatic, no budget picker
+
+**Summary:** Research flow changed from "asset + budget → 12 combos" to fully automatic "asset → 12 combos → best combo + budget projection table for all 6 budgets."
+
+### Changes (`src/backtest/engine.py`, `main.py`)
+
+- `run_backtest_research(symbol)` — removed `budget` param entirely; returns pure % metrics
+- `_format_research_msg(results, symbol, lang)` — removed `budget` param; now shows:
+  - Top-5 by Sharpe with `net %` column (not $/yr)
+  - Best combo by max `total_pnl_after_tax_pct`
+  - Budget projection table: `$100 / $250 / $500 / $1000 / $2500 / $5000` → `$/year`
+- `research_asset_chosen` handler: no longer reads `bt_budget` from user_data
+- `_project_budget(net_pct, days, budget)` helper: annualised $ return for any budget
+
+### Rationale
+
+Budget is a linear multiplier on % returns — it doesn't change WR or Sharpe ranking. Asking the user for a budget in Research was unnecessary friction. Research now shows all budgets in one projection table.
+
+→ [[Research Feature]]
+
+---
+
 ## 2026-04-22 — Simulator overhaul: fees/tax, TP picker, ADX filter, Research mode
 
 **Summary:** Major simulator upgrade — correct Lithuanian tax calculation, TP/SL selection, ADX danger zone filter (data-driven), weekly EMA21 macro filter, local Ollama LLM replacing OpenAI, and new Research grid-search feature.
