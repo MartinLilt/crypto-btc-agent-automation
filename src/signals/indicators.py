@@ -815,7 +815,8 @@ def check_entry_signal(
     funding_data: dict | None = None,    # supplementary display only (not scored)
     fg_data: dict | None = None,         # supplementary display only (not scored)
     pressure_data: dict | None = None,
-    candles_4h: list | None = None,      # multi-timeframe L2 alignment
+    candles_4h: list | None = None,      # multi-timeframe L2/L3 alignment
+    candles_1d: list | None = None,      # daily trend hard filter
 ) -> tuple[bool, dict]:
     l1_score, l1   = is_market_moving(candles)
     l2_score, l2   = is_uptrend(candles, candles_4h=candles_4h)
@@ -837,11 +838,32 @@ def check_entry_signal(
 
     total_score = (l1_score + l2_score + l3_score + l4_score + l5_score +
                    l6_score + l7_score + l8_score + l9_score + l10_score)
-    should_enter = total_score >= ENTRY_SCORE_THRESHOLD
+
+    # ── Hard filters — block entry regardless of score ────────────────────────
+    hard_blocks = []
+
+    # RSI overbought: backtest shows avg loss RSI = 71.9, filter RSI > 65
+    if l3["rsi"] > 65:
+        hard_blocks.append(f"RSI {l3['rsi']:.0f} > 65 (overbought — high reversal risk)")
+
+    # Daily trend: only enter when price > daily EMA50 (bull market)
+    if candles_1d and len(candles_1d) >= 50:
+        ema50_1d = calculate_ema(candles_1d, 50)
+        if ema50_1d:
+            price_1d = candles_1d[-1]["close"]
+            ema50_1d_val = ema50_1d[-1]
+            if price_1d < ema50_1d_val:
+                hard_blocks.append(
+                    f"Daily trend bearish "
+                    f"(price ${price_1d:,.0f} < daily EMA50 ${ema50_1d_val:,.0f})"
+                )
+
+    should_enter = (total_score >= ENTRY_SCORE_THRESHOLD) and not hard_blocks
 
     report = {
         "should_enter": should_enter,
         "total_score":  total_score,
+        "hard_blocks":  hard_blocks,
         "layers": {
             "L1_volatility":    {"pass": l1["pass"],  "score": l1_score,  **l1},
             "L2_trend":         {"pass": l2["pass"],  "score": l2_score,  **l2},

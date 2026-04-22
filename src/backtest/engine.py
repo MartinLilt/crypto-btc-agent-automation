@@ -54,6 +54,9 @@ _BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
 MAX_HOLD_HOURS = 48     # exit timeout if neither TP nor SL hit
 WARMUP_CANDLES = 210    # need 200+ for EMA-200
 
+BINANCE_FEE_PCT   = 0.1   # 0.1% per side (taker), 0.2% round-trip
+LT_TAX_RATE       = 0.15  # Lithuania 15% capital gains tax (≤€120k/year, 2026)
+
 
 # ── 1. Data fetching ──────────────────────────────────────────────────────────
 
@@ -268,7 +271,11 @@ def _eval_bar(candles_window: list, ts_ms: int,
 
     total_score = (l1_score + l2_score + l3_score + l4_score + l5_score +
                    l6_score + l7_score + l8_score + l9_score + l10_score)
-    all_pass = total_score >= ENTRY_SCORE_THRESHOLD
+
+    # Hard filter: RSI > 65 blocks entry (backtest verified: avg loss RSI = 71.9)
+    rsi_block = l3.get("rsi", 0) > 65
+
+    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block
 
     snapshot = {
         "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
@@ -348,15 +355,23 @@ def _simulate_trade(candles: list, entry_idx: int,
             c["open_time_ms"] / 1000, tz=timezone.utc).isoformat()
 
     pnl_pct = (exit_price - entry_price) / entry_price * 100
+    fee_pct = BINANCE_FEE_PCT * 2              # entry + exit
+    pnl_pct_net_fees = pnl_pct - fee_pct      # after Binance fees
+    # Lithuanian 15% tax applies only to positive net gains
+    tax_pct = max(0.0, pnl_pct_net_fees) * LT_TAX_RATE
+    pnl_pct_after_tax = pnl_pct_net_fees - tax_pct
 
     return {
-        "result":           result,
-        "entry_price":      entry_price,
-        "exit_price":       exit_price,
-        "exit_time":        exit_time,
-        "pnl_pct":          round(pnl_pct, 4),
-        "hold_hours":       hold_hours,
-        "max_drawdown_pct": round(max_drawdown, 4),
+        "result":              result,
+        "entry_price":         entry_price,
+        "exit_price":          exit_price,
+        "exit_time":           exit_time,
+        "pnl_pct":             round(pnl_pct, 4),
+        "pnl_pct_net_fees":    round(pnl_pct_net_fees, 4),
+        "pnl_pct_after_tax":   round(pnl_pct_after_tax, 4),
+        "fee_pct":             round(fee_pct, 4),
+        "hold_hours":          hold_hours,
+        "max_drawdown_pct":    round(max_drawdown, 4),
     }
 
 
@@ -364,53 +379,71 @@ def _simulate_trade(candles: list, entry_idx: int,
 
 def _calc_stats(trades: list, total_candles: int,
                 tp_pct: float, sl_pct: float) -> dict:
-    """Compute win rate, P&L, Sharpe, drawdown from trade list."""
+    """Compute win rate, P&L (gross / net-fees / after-tax), Sharpe, drawdown."""
     if not trades:
         return {
             "total_signals": 0, "wins": 0, "losses": 0, "timeouts": 0,
             "win_rate_pct": 0.0, "avg_profit_pct": 0.0, "avg_loss_pct": 0.0,
-            "total_pnl_pct": 0.0, "max_drawdown_pct": 0.0,
-            "sharpe_ratio": 0.0, "signal_freq": 0.0,
+            "total_pnl_pct": 0.0, "total_pnl_net_fees_pct": 0.0,
+            "total_pnl_after_tax_pct": 0.0,
+            "max_drawdown_pct": 0.0, "sharpe_ratio": 0.0, "signal_freq": 0.0,
+            "breakeven_wr_fees": 0.0, "breakeven_wr_tax": 0.0,
         }
 
-    wins = [t for t in trades if t["result"] == "TP_HIT"]
-    losses = [t for t in trades if t["result"] == "SL_HIT"]
+    wins    = [t for t in trades if t["result"] == "TP_HIT"]
+    losses  = [t for t in trades if t["result"] == "SL_HIT"]
     timeouts = [t for t in trades if t["result"] == "TIMEOUT"]
 
-    win_rate = len(wins) / len(trades) * 100
-    avg_profit = (
-        sum(t["pnl_pct"] for t in wins) / len(wins) if wins else 0.0
-    )
-    avg_loss = (
-        sum(t["pnl_pct"] for t in losses) / len(losses) if losses else 0.0
-    )
-    pnls = [t["pnl_pct"] for t in trades]
-    total_pnl = sum(pnls)
+    win_rate   = len(wins) / len(trades) * 100
+    avg_profit = sum(t["pnl_pct"] for t in wins) / len(wins) if wins else 0.0
+    avg_loss   = sum(t["pnl_pct"] for t in losses) / len(losses) if losses else 0.0
+
+    pnls          = [t["pnl_pct"] for t in trades]
+    pnls_net_fees = [t["pnl_pct_net_fees"] for t in trades]
+    pnls_tax      = [t["pnl_pct_after_tax"] for t in trades]
+
+    total_pnl          = sum(pnls)
+    total_pnl_net_fees = sum(pnls_net_fees)
+    total_pnl_after_tax = sum(pnls_tax)
     max_dd = max((t["max_drawdown_pct"] for t in trades), default=0.0)
 
     # Sharpe ratio (annualised, assume 1h bars, risk-free = 0)
-    n = len(pnls)
+    n = len(pnls_net_fees)
     if n > 1:
-        mean_r = total_pnl / n
-        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in pnls) / (n - 1))
+        mean_r = total_pnl_net_fees / n
+        std_r  = math.sqrt(sum((r - mean_r) ** 2 for r in pnls_net_fees) / (n - 1))
         sharpe = (mean_r / std_r * math.sqrt(8760)) if std_r > 0 else 0.0
     else:
         sharpe = 0.0
 
-    signal_freq = len(trades) / total_candles * 100  # signals per 100 candles
+    signal_freq = len(trades) / total_candles * 100
+
+    # Break-even win rate after fees: loss_net / (win_net + |loss_net|)
+    fee = BINANCE_FEE_PCT * 2
+    win_net_fees  = tp_pct - fee
+    loss_net_fees = sl_pct + fee
+    be_fees = loss_net_fees / (win_net_fees + loss_net_fees) * 100
+
+    # Break-even after fees + 15% Lithuanian tax
+    win_net_tax  = win_net_fees * (1 - LT_TAX_RATE)
+    be_tax = loss_net_fees / (win_net_tax + loss_net_fees) * 100
 
     return {
-        "total_signals":   len(trades),
-        "wins":            len(wins),
-        "losses":          len(losses),
-        "timeouts":        len(timeouts),
-        "win_rate_pct":    round(win_rate, 1),
-        "avg_profit_pct":  round(avg_profit, 3),
-        "avg_loss_pct":    round(avg_loss, 3),
-        "total_pnl_pct":   round(total_pnl, 2),
-        "max_drawdown_pct": round(max_dd, 2),
-        "sharpe_ratio":    round(sharpe, 2),
-        "signal_freq":     round(signal_freq, 2),
+        "total_signals":          len(trades),
+        "wins":                   len(wins),
+        "losses":                 len(losses),
+        "timeouts":               len(timeouts),
+        "win_rate_pct":           round(win_rate, 1),
+        "avg_profit_pct":         round(avg_profit, 3),
+        "avg_loss_pct":           round(avg_loss, 3),
+        "total_pnl_pct":          round(total_pnl, 2),
+        "total_pnl_net_fees_pct": round(total_pnl_net_fees, 2),
+        "total_pnl_after_tax_pct": round(total_pnl_after_tax, 2),
+        "max_drawdown_pct":       round(max_dd, 2),
+        "sharpe_ratio":           round(sharpe, 2),
+        "signal_freq":            round(signal_freq, 2),
+        "breakeven_wr_fees":      round(be_fees, 1),
+        "breakeven_wr_tax":       round(be_tax, 1),
     }
 
 

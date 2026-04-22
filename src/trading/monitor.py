@@ -67,8 +67,9 @@ async def scanner_loop(app):
             from src.signals.indicators import check_entry_signal
             from src.data.news_client import get_recent_news, summarise_news
 
-            candles = get_candles(symbol=SYMBOL, interval="1h", limit=250)
+            candles    = get_candles(symbol=SYMBOL, interval="1h", limit=250)
             candles_4h = get_candles(symbol=SYMBOL, interval="4h", limit=210)
+            candles_1d = get_candles(symbol=SYMBOL, interval="1d", limit=100)
             spread, _, _ = get_order_book_spread(SYMBOL)
             bid_depth, ask_depth = get_order_book_depth(SYMBOL)
             ticker = get_ticker_24h(SYMBOL)
@@ -94,6 +95,7 @@ async def scanner_loop(app):
                 pressure_data=pressure_data,
                 funding_data=funding_data,
                 candles_4h=candles_4h,
+                candles_1d=candles_1d,
             )
 
             total_score = report.get("total_score", 0)

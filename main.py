@@ -260,6 +260,7 @@ async def _run_analysis(query, context, lang: str):
         symbol = cfg["asset"]
         candles    = get_candles(symbol=symbol, interval="1h", limit=250)
         candles_4h = get_candles(symbol=symbol, interval="4h", limit=210)
+        candles_1d = get_candles(symbol=symbol, interval="1d", limit=100)
         spread, _, _ = get_order_book_spread(symbol)
         bid_depth, ask_depth = get_order_book_depth(symbol)
         ticker = get_ticker_24h(symbol)
@@ -301,6 +302,7 @@ async def _run_analysis(query, context, lang: str):
             fg_data=fg_data,
             pressure_data=pressure_data,
             candles_4h=candles_4h,
+            candles_1d=candles_1d,
         )
 
         ai_result = None
@@ -497,6 +499,7 @@ async def _run_analysis(query, context, lang: str):
         else:
             lines.append(f"{score_icon} *Score: {total_score}/100*")
 
+        hard_blocks = report.get("hard_blocks", [])
         if should_enter:
             lines.append(t("signal_enter", lang))
         else:
@@ -512,6 +515,12 @@ async def _run_analysis(query, context, lang: str):
                 lines.append(f"_Слабые слои: {weak_str}_")
             else:
                 lines.append(f"_Weak layers: {weak_str}_")
+            if hard_blocks:
+                for hb in hard_blocks:
+                    if lang == "ru":
+                        lines.append(f"🚫 _Жёсткий фильтр: {_esc(hb)}_")
+                    else:
+                        lines.append(f"🚫 _Hard filter: {_esc(hb)}_")
 
         if ai_result:
             lines.append("")
@@ -687,6 +696,9 @@ BT_PERIODS = [
     ("1 year",   "1 год",    365, 8760),
 ]
 
+# Budget presets for simulation calculator (per-trade capital in USD)
+BT_BUDGETS = [100, 250, 500, 1_000, 2_500, 5_000]
+
 
 async def backtest_cmd(update: Update,
                        context: ContextTypes.DEFAULT_TYPE):
@@ -817,9 +829,13 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wins=len(wins),
         losses=len(losses),
         timeouts=len(timeouts),
+        be_fees=_esc(f"{result.get('breakeven_wr_fees', 40.0):.1f}"),
+        be_tax=_esc(f"{result.get('breakeven_wr_tax', 44.0):.1f}"),
         avg_profit=_esc(f"{result['avg_profit_pct']:+.2f}"),
         avg_loss=_esc(f"{result['avg_loss_pct']:+.2f}"),
         total_pnl=_esc(f"{result['total_pnl_pct']:+.1f}"),
+        pnl_net_fees=_esc(f"{result.get('total_pnl_net_fees_pct', 0.0):+.1f}"),
+        pnl_after_tax=_esc(f"{result.get('total_pnl_after_tax_pct', 0.0):+.1f}"),
         max_dd=_esc(result["max_drawdown_pct"]),
         sharpe=_esc(result["sharpe_ratio"]),
         best_pnl=_esc(f"{best['pnl_pct']:+.2f}"),
