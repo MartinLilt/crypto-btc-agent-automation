@@ -427,8 +427,27 @@ async def _run_analysis(query, context, lang: str):
             l2_tf_note = " ↑4h" if l2.get("tf4h_aligned") else " ↓4h"
         l2_vwap_note = " >VWAP" if l2.get("vwap_above") else " <VWAP"
 
-        # L3 4h RSI note
+        # L3 notes: 4h RSI + divergence
         l3_4h_note = f"  4h={l3['tf4h_rsi']:.0f}" if l3.get("tf4h_rsi") is not None else ""
+        div = l3.get("divergence", 0)
+        l3_div_note = "  ⚡bull.div" if div > 0 else ("  ⚠bear.div" if div < 0 else "")
+
+        # L5 bid/ask imbalance note
+        imb = l5.get("ob_imbalance", 1.0)
+        l5_imb_note = f"  OB {imb:.1f}x"
+
+        # L6 ATR suggestion note
+        atr_tp = l6.get("atr_tp_suggested")
+        l6_atr_note = f"  ATR→TP {atr_tp}%" if atr_tp else ""
+
+        # L9 4h pattern note + streak
+        streak = l9.get("bull_streak", 0)
+        tf4h_pat = l9.get("tf4h_pattern")
+        l9_extra = ""
+        if tf4h_pat:
+            l9_extra += f"  4h:{tf4h_pat.replace('_', '')}"
+        if streak >= 5:
+            l9_extra += f"  {streak}xGREEN"
 
         # L10 funding note
         fr = l10.get("funding_rate")
@@ -441,21 +460,21 @@ async def _run_analysis(query, context, lang: str):
              f"EMA50 ${l2.get('ema50', 0):,.0f}  "
              f"EMA200 ${l2.get('ema200', 0):,.0f}{l2_tf_note}{l2_vwap_note}"),
             ("L3_momentum",      t("layer_momentum_short",     lang),
-             f"RSI {l3['rsi']:.1f}  MACD {l3['macd_hist']:+.1f}{l3_4h_note}"),
+             f"RSI {l3['rsi']:.1f}  MACD {l3['macd_hist']:+.1f}{l3_4h_note}{l3_div_note}"),
             ("L4_vol_trend",     t("layer_vol_trend_short",    lang),
-             f"×{l4.get('ratio', 1.0):.2f} vs SMA20"),
+             f"x{l4.get('ratio', 1.0):.2f} vs SMA20"),
             ("L5_liquidity",     t("layer_liquidity_short",    lang),
              ("спред" if lang == "ru" else "spread")
-             + f" ${l5['spread']:.2f}"),
+             + f" ${l5['spread']:.2f}{l5_imb_note}"),
             ("L6_risk_reward",   t("layer_risk_reward_short",  lang),
              f"+${l6['net_profit']:.2f} / -${l6['net_loss']:.2f}"
-             f"  RR {l6['rr_ratio']:.2f}"),
+             f"  RR {l6['rr_ratio']:.2f}{l6_atr_note}"),
             ("L7_news",          t("layer_news_short",         lang),
              news_str),
             ("L8_sr_proximity",  t("layer_sr_proximity_short", lang),
              sr_str),
             ("L9_candle_pattern",t("layer_candle_pattern_short",lang),
-             pattern_str),
+             pattern_str + l9_extra),
             ("L10_pressure",     t("layer_pressure_short",     lang),
              pressure_str + l10_fr_note),
         ]

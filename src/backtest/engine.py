@@ -35,6 +35,7 @@ from src.signals.indicators import (
     is_market_moving,
     is_not_overbought,
     is_uptrend,
+    is_volume_trending,
     GOOD_HOURS_UTC,
     SKIP_WEEKDAYS,
     ENTRY_SCORE_THRESHOLD,
@@ -209,18 +210,9 @@ def _eval_bar(candles_window: list, ts_ms: int,
     # L3 — Momentum
     l3_score, l3 = is_not_overbought(candles_window)
 
-    # L4 — Timing: neutral score in backtest (don't penalise off-hours)
-    l4_score = 5
+    # L4 — Volume Spike (real computation from candle window)
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-    l4 = {
-        "score":      l4_score,
-        "pass":       True,
-        "hour_utc":   dt.hour,
-        "weekday":    dt.strftime("%A"),
-        "hour_ok":    dt.hour in GOOD_HOURS_UTC,
-        "weekday_ok": dt.weekday() not in SKIP_WEEKDAYS,
-        "skipped":    True,
-    }
+    l4_score, l4 = is_volume_trending(candles_window)
 
     # L5 — Liquidity (BTC: $30M/24h floor, score-based)
     last = candles_window[-1]
@@ -239,11 +231,13 @@ def _eval_bar(candles_window: list, ts_ms: int,
         "min_volume_usd":  30_000_000,
     }
 
-    # L6 — Risk/Reward
+    # L6 — Risk/Reward (with ATR validation)
     l6_score, l6 = check_risk_reward(
         budget=100.0,
         take_profit_pct=tp_pct,
         stop_loss_pct=sl_pct,
+        atr=l1.get("atr"),
+        price=candles_window[-1]["close"],
     )
 
     # L7 — News: neutral in backtest

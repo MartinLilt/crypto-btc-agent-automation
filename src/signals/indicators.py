@@ -475,6 +475,27 @@ def calculate_macd(candles: list) -> tuple[float, float, float]:
     return round(macd_val, 2), round(signal_val, 2), round(macd_val - signal_val, 2)
 
 
+def _rsi_divergence(candles: list, lookback: int = 10) -> int:
+    """
+    Returns +2 (bullish divergence), -2 (bearish divergence), or 0.
+    Bearish: price makes higher high but RSI makes lower high → reversal risk.
+    Bullish: price makes lower low but RSI makes higher low → recovery signal.
+    """
+    if len(candles) < lookback * 2 + 15:
+        return 0
+    rsi_now  = calculate_rsi(candles)
+    rsi_prev = calculate_rsi(candles[:-lookback])
+    high_now  = max(c["high"] for c in candles[-lookback:])
+    high_prev = max(c["high"] for c in candles[-lookback * 2:-lookback])
+    low_now   = min(c["low"]  for c in candles[-lookback:])
+    low_prev  = min(c["low"]  for c in candles[-lookback * 2:-lookback])
+    if high_now > high_prev * 1.001 and rsi_now < rsi_prev - 3:
+        return -2   # bearish divergence — momentum fading on new high
+    if low_now < low_prev * 0.999 and rsi_now > rsi_prev + 3:
+        return +2   # bullish divergence — momentum recovering on new low
+    return 0
+
+
 def is_not_overbought(candles: list, candles_4h: list | None = None) -> tuple[int, dict]:
     rsi = calculate_rsi(candles)
     macd, macd_sig, macd_hist = calculate_macd(candles)
@@ -493,19 +514,23 @@ def is_not_overbought(candles: list, candles_4h: list | None = None) -> tuple[in
         elif tf4h_rsi < 35:
             rsi4h_bonus = -1   # 4h oversold — trend might be weak
 
-    score = min(10, max(0, score + rsi4h_bonus))
+    # RSI divergence — price/momentum disagreement
+    div_signal = _rsi_divergence(candles)
+
+    score = min(10, max(0, score + rsi4h_bonus + div_signal))
 
     details = {
-        "score":       score,
-        "pass":        score >= 7,
-        "rsi":         rsi,
-        "rsi_ok":      RSI_MIN < rsi < RSI_MAX,
-        "macd":        macd,
-        "macd_signal": macd_sig,
-        "macd_hist":   macd_hist,
-        "macd_ok":     macd_hist > 0,
-        "tf4h_rsi":    round(tf4h_rsi, 2) if tf4h_rsi is not None else None,
-        "rsi4h_bonus": rsi4h_bonus,
+        "score":          score,
+        "pass":           score >= 7,
+        "rsi":            rsi,
+        "rsi_ok":         RSI_MIN < rsi < RSI_MAX,
+        "macd":           macd,
+        "macd_signal":    macd_sig,
+        "macd_hist":      macd_hist,
+        "macd_ok":        macd_hist > 0,
+        "tf4h_rsi":       round(tf4h_rsi, 2) if tf4h_rsi is not None else None,
+        "rsi4h_bonus":    rsi4h_bonus,
+        "divergence":     div_signal,   # +2 bullish, -2 bearish, 0 none
     }
     return score, details
 
@@ -556,16 +581,28 @@ def has_liquidity(
     volume_ok = volume_24h >= MIN_VOLUME_24H
 
     score = _score_l5(spread, depth_ok, volume_24h)
+
+    # Bid/Ask imbalance — order book sentiment
+    imbalance = bid_depth / ask_depth if ask_depth > 0 else 1.0
+    if imbalance >= 3.0:      imbalance_bonus = 2    # strong buyer wall
+    elif imbalance >= 1.5:    imbalance_bonus = 1
+    elif imbalance <= 0.33:   imbalance_bonus = -2   # strong seller wall
+    elif imbalance <= 0.67:   imbalance_bonus = -1
+    else:                     imbalance_bonus = 0
+    score = min(10, max(0, score + imbalance_bonus))
+
     details = {
-        "score":          score,
-        "pass":           score >= 7,
-        "spread":         spread,
-        "spread_ok":      spread_ok,
-        "bid_depth_btc":  bid_depth,
-        "ask_depth_btc":  ask_depth,
-        "depth_ok":       depth_ok,
-        "volume_24h_usd": volume_24h,
-        "volume_ok":      volume_ok,
+        "score":            score,
+        "pass":             score >= 7,
+        "spread":           spread,
+        "spread_ok":        spread_ok,
+        "bid_depth_btc":    bid_depth,
+        "ask_depth_btc":    ask_depth,
+        "depth_ok":         depth_ok,
+        "volume_24h_usd":   volume_24h,
+        "volume_ok":        volume_ok,
+        "ob_imbalance":     round(imbalance, 2),
+        "imbalance_bonus":  imbalance_bonus,
     }
     return score, details
 
@@ -576,6 +613,8 @@ def check_risk_reward(
     budget: float,
     take_profit_pct: float,
     stop_loss_pct: float,
+    atr: float | None = None,
+    price: float | None = None,
 ) -> tuple[int, dict]:
     fee_open = budget * BINANCE_FEE_RATE
     fee_close = budget * BINANCE_FEE_RATE
@@ -588,20 +627,37 @@ def check_risk_reward(
     rr_ratio = net_profit / net_loss if net_loss > 0 else 0.0
 
     score = _score_l6(rr_ratio, net_profit)
+
+    # ATR validation: is our TP reachable given current volatility?
+    atr_pct = round(atr / price * 100, 3) if atr and price and price > 0 else None
+    atr_tp_suggested = round(atr_pct * 1.5, 2) if atr_pct else None
+    atr_sl_suggested = round(atr_pct * 0.75, 2) if atr_pct else None
+    atr_modifier = 0
+    if atr_pct:
+        tp_atr_ratio = take_profit_pct / atr_pct
+        if tp_atr_ratio < 0.8:    atr_modifier = -2  # TP inside 1 ATR — unlikely to reach
+        elif tp_atr_ratio < 1.0:  atr_modifier = -1  # TP slightly tight
+        elif tp_atr_ratio >= 2.0: atr_modifier = +1  # TP well above ATR — clean target
+    score = min(10, max(0, score + atr_modifier))
+
     return score, {
-        "score":           score,
-        "pass":            score >= 7,
-        "budget":          round(budget, 2),
-        "take_profit_pct": take_profit_pct,
-        "stop_loss_pct":   stop_loss_pct,
-        "gross_profit":    round(gross_profit, 4),
-        "gross_loss":      round(gross_loss, 4),
-        "total_fee":       round(total_fee, 4),
-        "net_profit":      round(net_profit, 4),
-        "net_loss":        round(net_loss, 4),
-        "rr_ratio":        round(rr_ratio, 2),
-        "profit_ok":       net_profit > 0,
-        "rr_ok":           rr_ratio >= MIN_RR_RATIO,
+        "score":            score,
+        "pass":             score >= 7,
+        "budget":           round(budget, 2),
+        "take_profit_pct":  take_profit_pct,
+        "stop_loss_pct":    stop_loss_pct,
+        "gross_profit":     round(gross_profit, 4),
+        "gross_loss":       round(gross_loss, 4),
+        "total_fee":        round(total_fee, 4),
+        "net_profit":       round(net_profit, 4),
+        "net_loss":         round(net_loss, 4),
+        "rr_ratio":         round(rr_ratio, 2),
+        "profit_ok":        net_profit > 0,
+        "rr_ok":            rr_ratio >= MIN_RR_RATIO,
+        "atr_pct":          atr_pct,
+        "atr_tp_suggested": atr_tp_suggested,
+        "atr_sl_suggested": atr_sl_suggested,
+        "atr_modifier":     atr_modifier,
     }
 
 
@@ -766,10 +822,13 @@ def check_entry_signal(
     l3_score, l3   = is_not_overbought(candles, candles_4h=candles_4h)
     l4_score, l4   = is_volume_trending(candles)
     l5_score, l5   = has_liquidity(spread, bid_depth, ask_depth, volume_24h)
-    l6_score, l6   = check_risk_reward(budget, take_profit_pct, stop_loss_pct)
+    l6_score, l6   = check_risk_reward(
+        budget, take_profit_pct, stop_loss_pct,
+        atr=l1.get("atr"), price=candles[-1]["close"] if candles else None,
+    )
     l7_score, l7   = check_news_sentiment(news_summary or {})
     l8_score, l8   = check_sr_proximity(candles, tp_pct=take_profit_pct)
-    l9_score, l9   = detect_candle_patterns(candles)
+    l9_score, l9   = detect_candle_patterns(candles, candles_4h=candles_4h)
     l10_score, l10 = check_buy_pressure(pressure_data or {}, funding_data=funding_data)
 
     # Supplementary display data
