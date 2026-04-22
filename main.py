@@ -261,6 +261,7 @@ async def _run_analysis(query, context, lang: str):
         candles    = get_candles(symbol=symbol, interval="1h", limit=250)
         candles_4h = get_candles(symbol=symbol, interval="4h", limit=210)
         candles_1d = get_candles(symbol=symbol, interval="1d", limit=100)
+        candles_1w = get_candles(symbol=symbol, interval="1w", limit=30)
         spread, _, _ = get_order_book_spread(symbol)
         bid_depth, ask_depth = get_order_book_depth(symbol)
         ticker = get_ticker_24h(symbol)
@@ -303,6 +304,7 @@ async def _run_analysis(query, context, lang: str):
             pressure_data=pressure_data,
             candles_4h=candles_4h,
             candles_1d=candles_1d,
+            candles_1w=candles_1w,
         )
 
         ai_result = None
@@ -852,7 +854,6 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         losses=len(losses),
         timeouts=len(timeouts),
         be_fees=_esc(f"{result.get('breakeven_wr_fees', 40.0):.1f}"),
-        be_tax=_esc(f"{result.get('breakeven_wr_tax', 44.0):.1f}"),
         avg_win_usd=_esc(f"{avg_win_usd:+.2f}"),
         avg_loss_usd=_esc(f"{avg_loss_usd:+.2f}"),
         gross_usd=_esc(f"{gross_usd:+.2f}"),
@@ -867,6 +868,18 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         worst_time=_esc(worst_time),
         market_ctx=market_ctx,
     )
+    # AI commentary on simulation results
+    try:
+        from src.ai.orchestrator import ai_review_simulation
+        ai_comment = ai_review_simulation(
+            symbol, result, budget, days, lang=lang
+        )
+        if ai_comment:
+            ai_header = "🤖 *ИИ\\-оценка:*\n" if lang == "ru" else "🤖 *AI assessment:*\n"
+            msg += f"\n\n{ai_header}{_esc(ai_comment)}"
+    except Exception as ai_err:
+        logger.warning("Simulation AI skipped: %s", ai_err)
+
     if len(msg) > 4090:
         msg = msg[:4087] + "…"
 

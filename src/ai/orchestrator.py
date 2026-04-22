@@ -210,6 +210,90 @@ def _is_available() -> bool:
         return False
 
 
+def ai_review_simulation(
+    symbol: str,
+    stats: dict,
+    budget: float,
+    days: int,
+    lang: str = "en",
+) -> str:
+    """
+    Ask local LLM to comment on simulation results in plain language.
+    Returns a plain text paragraph (2-4 sentences). Empty string on failure.
+    """
+    if not _is_available():
+        return ""
+
+    wr         = stats.get("win_rate_pct", 0)
+    signals    = stats.get("total_signals", 0)
+    after_tax  = stats.get("total_pnl_after_tax_pct", 0) * budget / 100
+    net_fees   = stats.get("total_pnl_net_fees_pct", 0)  * budget / 100
+    be_fees    = stats.get("breakeven_wr_fees", 40.0)
+    be_tax     = stats.get("breakeven_wr_tax",  44.0)
+    max_dd     = stats.get("max_drawdown_pct", 0)
+    sharpe     = stats.get("sharpe_ratio", 0)
+    wins       = stats.get("wins", 0)
+    losses     = stats.get("losses", 0)
+    timeouts   = stats.get("timeouts", 0)
+    annual_usd = after_tax * (365 / max(days, 1))
+
+    if lang == "ru":
+        system = (
+            "Ты опытный трейдер, объясняющий результаты бэктеста обычному человеку. "
+            "Дай честную практическую оценку в 2-4 предложениях на русском языке. "
+            "Без жаргона. Скажи: стратегия прибыльна или нет, безопасен ли такой бюджет, "
+            "что может пойти не так, стоит ли запускать вживую."
+        )
+        user = (
+            f"Актив: {symbol}, период: {days} дней, капитал/сделку: ${budget:.0f}\n"
+            f"Сигналов: {signals} ({wins} прибыльных / {losses} убыточных / {timeouts} таймаут)\n"
+            f"Win rate: {wr:.1f}%  (безубыток с комис.: {be_fees:.1f}%, с налогом: {be_tax:.1f}%)\n"
+            f"Итого после комиссий и налога 15% за {days}д: ${net_fees:+.2f} → ${after_tax:+.2f}\n"
+            f"Прогноз на год: ${annual_usd:+.0f}\n"
+            f"Max просадка: {max_dd:.1f}%  Sharpe: {sharpe:.2f}\n\n"
+            "Дай короткую практическую оценку."
+        )
+    else:
+        system = (
+            "You are an experienced trader explaining backtest results to a regular person. "
+            "Give an honest practical assessment in 2-4 sentences in English. "
+            "No jargon. State: is the strategy profitable, is the budget safe, "
+            "what can go wrong, is it worth running live."
+        )
+        user = (
+            f"Asset: {symbol}, period: {days} days, capital/trade: ${budget:.0f}\n"
+            f"Signals: {signals} ({wins} wins / {losses} losses / {timeouts} timeouts)\n"
+            f"Win rate: {wr:.1f}%  (break-even with fees: {be_fees:.1f}%, with tax: {be_tax:.1f}%)\n"
+            f"Total after fees + 15% LT tax over {days}d: ${net_fees:+.2f} → ${after_tax:+.2f}\n"
+            f"Projected annual: ${annual_usd:+.0f}\n"
+            f"Max drawdown: {max_dd:.1f}%  Sharpe: {sharpe:.2f}\n\n"
+            "Give a short practical assessment."
+        )
+
+    logger.info("Requesting simulation AI commentary (%s)...", OLLAMA_MODEL)
+    try:
+        resp = requests.post(
+            f"{OLLAMA_HOST}/api/chat",
+            json={
+                "model":   OLLAMA_MODEL,
+                "stream":  False,
+                "options": {"temperature": 0.4, "num_predict": 300},
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user",   "content": user},
+                ],
+            },
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        text = resp.json()["message"]["content"].strip()
+        logger.info("Simulation AI commentary received (%d chars)", len(text))
+        return text
+    except Exception as e:
+        logger.warning("Simulation AI commentary failed: %s", e)
+        return ""
+
+
 def ai_review(
     symbol: str,
     price: float,

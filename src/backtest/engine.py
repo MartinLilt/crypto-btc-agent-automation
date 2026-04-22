@@ -19,7 +19,7 @@ import logging
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -181,11 +181,58 @@ def _fetch_funding_history(symbol: str) -> list:
         return []
 
 
+# ── 1b. Weekly EMA21 pre-computation ─────────────────────────────────────────
+
+def _build_weekly_ema21_index(candles: list) -> dict:
+    """
+    Derive weekly OHLCV from hourly candles and pre-compute EMA21 on weekly closes.
+    Returns {hourly_index: ema21_value | None} for every candle index.
+    ema21 is the value valid at the START of that hour (i.e. known before the bar).
+    """
+    if not candles:
+        return {}
+
+    # Assign each candle to its week (Mon 00:00 UTC)
+    week_closes: dict[tuple, float] = {}   # (year, isoweek) → last close seen
+    weekly_ema21_at: list = [None] * len(candles)
+
+    k = 2 / (21 + 1)
+    weekly_closes_list: list[float] = []
+    current_ema: float | None = None
+    current_week: tuple | None = None
+    last_ema_at_week_end: float | None = None
+
+    for i, c in enumerate(candles):
+        dt = datetime.fromtimestamp(c["open_time_ms"] / 1000, tz=timezone.utc)
+        iso = dt.isocalendar()
+        week_key = (iso[0], iso[1])
+
+        if week_key != current_week:
+            # New week started — lock in previous week's close and update EMA
+            if current_week is not None and current_week in week_closes:
+                prev_close = week_closes[current_week]
+                weekly_closes_list.append(prev_close)
+                n = len(weekly_closes_list)
+                if n >= 21:
+                    if n == 21:
+                        current_ema = sum(weekly_closes_list) / 21
+                    else:
+                        current_ema = prev_close * k + current_ema * (1 - k)
+                    last_ema_at_week_end = current_ema
+            current_week = week_key
+
+        week_closes[week_key] = c["close"]
+        weekly_ema21_at[i] = last_ema_at_week_end
+
+    return weekly_ema21_at
+
+
 # ── 2. Per-bar layer evaluation ───────────────────────────────────────────────
 
 def _eval_bar(candles_window: list, ts_ms: int,
               tp_pct: float, sl_pct: float,
-              spread_approx: float, symbol: str) -> tuple[bool, dict]:
+              spread_approx: float, symbol: str,
+              weekly_ema21: float | None = None) -> tuple[bool, dict]:
     """
     Run all layers on a window of candles ending at index i.
     Returns (signal: bool, layer_snapshot: dict)
@@ -275,7 +322,13 @@ def _eval_bar(candles_window: list, ts_ms: int,
     # Hard filter: RSI > 65 blocks entry (backtest verified: avg loss RSI = 71.9)
     rsi_block = l3.get("rsi", 0) > 65
 
-    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block
+    # Hard filter: weekly EMA21 — skip entries in macro bear regime
+    weekly_block = (
+        weekly_ema21 is not None
+        and candles_window[-1]["close"] < weekly_ema21
+    )
+
+    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not weekly_block
 
     snapshot = {
         "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
@@ -357,21 +410,18 @@ def _simulate_trade(candles: list, entry_idx: int,
     pnl_pct = (exit_price - entry_price) / entry_price * 100
     fee_pct = BINANCE_FEE_PCT * 2              # entry + exit
     pnl_pct_net_fees = pnl_pct - fee_pct      # after Binance fees
-    # Lithuanian 15% tax applies only to positive net gains
-    tax_pct = max(0.0, pnl_pct_net_fees) * LT_TAX_RATE
-    pnl_pct_after_tax = pnl_pct_net_fees - tax_pct
+    # Per-trade tax NOT applied here — LT tax is on net annual profit (see _calc_stats)
 
     return {
-        "result":              result,
-        "entry_price":         entry_price,
-        "exit_price":          exit_price,
-        "exit_time":           exit_time,
-        "pnl_pct":             round(pnl_pct, 4),
-        "pnl_pct_net_fees":    round(pnl_pct_net_fees, 4),
-        "pnl_pct_after_tax":   round(pnl_pct_after_tax, 4),
-        "fee_pct":             round(fee_pct, 4),
-        "hold_hours":          hold_hours,
-        "max_drawdown_pct":    round(max_drawdown, 4),
+        "result":           result,
+        "entry_price":      entry_price,
+        "exit_price":       exit_price,
+        "exit_time":        exit_time,
+        "pnl_pct":          round(pnl_pct, 4),
+        "pnl_pct_net_fees": round(pnl_pct_net_fees, 4),
+        "fee_pct":          round(fee_pct, 4),
+        "hold_hours":       hold_hours,
+        "max_drawdown_pct": round(max_drawdown, 4),
     }
 
 
@@ -387,11 +437,11 @@ def _calc_stats(trades: list, total_candles: int,
             "total_pnl_pct": 0.0, "total_pnl_net_fees_pct": 0.0,
             "total_pnl_after_tax_pct": 0.0,
             "max_drawdown_pct": 0.0, "sharpe_ratio": 0.0, "signal_freq": 0.0,
-            "breakeven_wr_fees": 0.0, "breakeven_wr_tax": 0.0,
+            "breakeven_wr_fees": 0.0, "lt_tax_pct": 0.0,
         }
 
-    wins    = [t for t in trades if t["result"] == "TP_HIT"]
-    losses  = [t for t in trades if t["result"] == "SL_HIT"]
+    wins     = [t for t in trades if t["result"] == "TP_HIT"]
+    losses   = [t for t in trades if t["result"] == "SL_HIT"]
     timeouts = [t for t in trades if t["result"] == "TIMEOUT"]
 
     win_rate   = len(wins) / len(trades) * 100
@@ -400,14 +450,17 @@ def _calc_stats(trades: list, total_candles: int,
 
     pnls          = [t["pnl_pct"] for t in trades]
     pnls_net_fees = [t["pnl_pct_net_fees"] for t in trades]
-    pnls_tax      = [t["pnl_pct_after_tax"] for t in trades]
 
     total_pnl          = sum(pnls)
     total_pnl_net_fees = sum(pnls_net_fees)
-    total_pnl_after_tax = sum(pnls_tax)
+
+    # LT law: 15% tax on NET annual profit (losses offset gains within the year)
+    lt_tax = max(0.0, total_pnl_net_fees) * LT_TAX_RATE
+    total_pnl_after_tax = total_pnl_net_fees - lt_tax
+
     max_dd = max((t["max_drawdown_pct"] for t in trades), default=0.0)
 
-    # Sharpe ratio (annualised, assume 1h bars, risk-free = 0)
+    # Sharpe ratio (annualised, risk-free = 0)
     n = len(pnls_net_fees)
     if n > 1:
         mean_r = total_pnl_net_fees / n
@@ -418,32 +471,28 @@ def _calc_stats(trades: list, total_candles: int,
 
     signal_freq = len(trades) / total_candles * 100
 
-    # Break-even win rate after fees: loss_net / (win_net + |loss_net|)
+    # Break-even WR after Binance fees
     fee = BINANCE_FEE_PCT * 2
     win_net_fees  = tp_pct - fee
     loss_net_fees = sl_pct + fee
     be_fees = loss_net_fees / (win_net_fees + loss_net_fees) * 100
 
-    # Break-even after fees + 15% Lithuanian tax
-    win_net_tax  = win_net_fees * (1 - LT_TAX_RATE)
-    be_tax = loss_net_fees / (win_net_tax + loss_net_fees) * 100
-
     return {
-        "total_signals":          len(trades),
-        "wins":                   len(wins),
-        "losses":                 len(losses),
-        "timeouts":               len(timeouts),
-        "win_rate_pct":           round(win_rate, 1),
-        "avg_profit_pct":         round(avg_profit, 3),
-        "avg_loss_pct":           round(avg_loss, 3),
-        "total_pnl_pct":          round(total_pnl, 2),
-        "total_pnl_net_fees_pct": round(total_pnl_net_fees, 2),
+        "total_signals":           len(trades),
+        "wins":                    len(wins),
+        "losses":                  len(losses),
+        "timeouts":                len(timeouts),
+        "win_rate_pct":            round(win_rate, 1),
+        "avg_profit_pct":          round(avg_profit, 3),
+        "avg_loss_pct":            round(avg_loss, 3),
+        "total_pnl_pct":           round(total_pnl, 2),
+        "total_pnl_net_fees_pct":  round(total_pnl_net_fees, 2),
         "total_pnl_after_tax_pct": round(total_pnl_after_tax, 2),
-        "max_drawdown_pct":       round(max_dd, 2),
-        "sharpe_ratio":           round(sharpe, 2),
-        "signal_freq":            round(signal_freq, 2),
-        "breakeven_wr_fees":      round(be_fees, 1),
-        "breakeven_wr_tax":       round(be_tax, 1),
+        "lt_tax_pct":              round(lt_tax, 2),
+        "max_drawdown_pct":        round(max_dd, 2),
+        "sharpe_ratio":            round(sharpe, 2),
+        "signal_freq":             round(signal_freq, 2),
+        "breakeven_wr_fees":       round(be_fees, 1),
     }
 
 
@@ -468,6 +517,9 @@ def run_backtest(
     # Fetch data (no external F&G / funding needed — L8/L9 use candle data)
     candles = _fetch_candles_full(symbol, days, interval)
 
+    # Pre-compute weekly EMA21 index (O(n) single pass)
+    weekly_ema21_index = _build_weekly_ema21_index(candles)
+
     total_candles = len(candles) - WARMUP_CANDLES
     trades_raw = []
 
@@ -479,6 +531,7 @@ def run_backtest(
         signal, snapshot = _eval_bar(
             window, ts_ms,
             tp_pct, sl_pct, 0.0, symbol,
+            weekly_ema21=weekly_ema21_index[i],
         )
 
         if not signal:
@@ -526,7 +579,6 @@ def run_backtest(
             "exit_time":           outcome["exit_time"],
             "pnl_pct":             outcome["pnl_pct"],
             "pnl_pct_net_fees":    outcome["pnl_pct_net_fees"],
-            "pnl_pct_after_tax":   outcome["pnl_pct_after_tax"],
             "hold_hours":          outcome["hold_hours"],
             "max_drawdown_pct":    outcome["max_drawdown_pct"],
         }

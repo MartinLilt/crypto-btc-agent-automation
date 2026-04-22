@@ -817,6 +817,7 @@ def check_entry_signal(
     pressure_data: dict | None = None,
     candles_4h: list | None = None,      # multi-timeframe L2/L3 alignment
     candles_1d: list | None = None,      # daily trend hard filter
+    candles_1w: list | None = None,      # weekly trend hard filter
 ) -> tuple[bool, dict]:
     l1_score, l1   = is_market_moving(candles)
     l2_score, l2   = is_uptrend(candles, candles_4h=candles_4h)
@@ -856,6 +857,18 @@ def check_entry_signal(
                 hard_blocks.append(
                     f"Daily trend bearish "
                     f"(price ${price_1d:,.0f} < daily EMA50 ${ema50_1d_val:,.0f})"
+                )
+
+    # Weekly trend: only enter when price > weekly EMA21 (macro bull regime)
+    if candles_1w and len(candles_1w) >= 21:
+        ema21_1w = calculate_ema(candles_1w, 21)
+        if ema21_1w:
+            price_1w = candles_1w[-1]["close"]
+            ema21_1w_val = ema21_1w[-1]
+            if price_1w < ema21_1w_val:
+                hard_blocks.append(
+                    f"Weekly trend bearish "
+                    f"(price ${price_1w:,.0f} < weekly EMA21 ${ema21_1w_val:,.0f})"
                 )
 
     should_enter = (total_score >= ENTRY_SCORE_THRESHOLD) and not hard_blocks
