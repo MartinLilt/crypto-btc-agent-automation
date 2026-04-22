@@ -84,6 +84,8 @@ def _main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
                               callback_data="menu_backtest")],
         [InlineKeyboardButton(t("btn_mode_patterns", lang),
                               callback_data="menu_patterns")],
+        [InlineKeyboardButton(t("btn_mode_research", lang),
+                              callback_data="menu_research")],
         [_lang_btn(lang)],
     ])
 
@@ -997,6 +999,135 @@ async def patterns_cmd(update: Update,
     )
 
 
+# ── Research ──────────────────────────────────────────────────────────────────
+
+async def menu_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main menu → Research: show asset picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    buttons = [
+        InlineKeyboardButton(label, callback_data=f"res_asset_{sym}")
+        for label, sym in ASSETS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    await query.edit_message_text(
+        t("research_pick_asset", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+def _format_research_msg(results: list, symbol: str, budget: float,
+                         lang: str) -> str:
+    """Format research grid-search results into a Telegram MarkdownV2 message."""
+    be_icon = lambda wr, be: "✅" if wr >= be + 5 else ("⚠️" if wr >= be else "❌")
+
+    if lang == "ru":
+        header = f"🧪 *Исследование — {_esc(symbol)}* \\(бюджет ${_esc(f'{budget:,.0f}')}\\)\n\n"
+    else:
+        header = f"🧪 *Research — {_esc(symbol)}* \\(budget ${_esc(f'{budget:,.0f}')}\\)\n\n"
+
+    # Filter profitable or near-break-even
+    valid = [r for r in results if r["total_signals"] >= 3]
+    if not valid:
+        return header + ("_Нет данных для анализа\\._" if lang == "ru"
+                        else "_No data to analyse\\._")
+
+    best_sharpe  = valid[0]
+    best_annual  = max(valid, key=lambda r: r["annual_usd"])
+
+    lines = [header]
+
+    # Top 5 by Sharpe
+    label = "🏆 *Топ\\-5 по Sharpe:*\n" if lang == "ru" else "🏆 *Top\\-5 by Sharpe:*\n"
+    lines.append(label)
+    medals = ["🥇", "🥈", "🥉", "4\\.", "5\\."]
+    for idx, r in enumerate(valid[:5]):
+        sl_str = f"{r['sl_pct']:.2f}".rstrip("0").rstrip(".")
+        icon   = be_icon(r["win_rate_pct"], r["breakeven_wr_fees"])
+        ann    = _esc(f"{r['annual_usd']:+.0f}")
+        wr     = _esc(f"{r['win_rate_pct']:.1f}")
+        sh     = _esc(f"{r['sharpe_ratio']:.1f}")
+        sig    = r["total_signals"]
+        lines.append(
+            f"{medals[idx]} TP {r['tp_pct']}% / SL {sl_str}% — {r['days']}d\n"
+            f"   {icon} WR {wr}%  \\|  ${ann}/yr  \\|  Sharpe {sh}  \\|  {sig} signals"
+        )
+    lines.append("")
+
+    # Recommendation
+    sl_b = f"{best_annual['sl_pct']:.2f}".rstrip("0").rstrip(".")
+    sl_s = f"{best_sharpe['sl_pct']:.2f}".rstrip("0").rstrip(".")
+    ann_best  = _esc(f"{best_annual['annual_usd']:+.0f}")
+    sh_best   = _esc(f"{best_sharpe['sharpe_ratio']:.1f}")
+    if lang == "ru":
+        lines.append("💡 *Вывод:*")
+        lines.append(
+            f"  Макс доход:   TP {best_annual['tp_pct']}% / SL {sl_b}% "
+            f"\\({best_annual['days']}d\\)  →  ${ann_best}/yr"
+        )
+        lines.append(
+            f"  Стабильнее:  TP {best_sharpe['tp_pct']}% / SL {sl_s}% "
+            f"\\({best_sharpe['days']}d\\)  →  Sharpe {sh_best}"
+        )
+    else:
+        lines.append("💡 *Recommendation:*")
+        lines.append(
+            f"  Best income:   TP {best_annual['tp_pct']}% / SL {sl_b}% "
+            f"\\({best_annual['days']}d\\)  →  ${ann_best}/yr"
+        )
+        lines.append(
+            f"  Most stable:  TP {best_sharpe['tp_pct']}% / SL {sl_s}% "
+            f"\\({best_sharpe['days']}d\\)  →  Sharpe {sh_best}"
+        )
+
+    return "\n".join(lines)
+
+
+async def research_asset_chosen(update: Update,
+                                context: ContextTypes.DEFAULT_TYPE):
+    """Asset selected → run research grid."""
+    query = update.callback_query
+    await query.answer()
+    lang   = _lang(context)
+    symbol = query.data[len("res_asset_"):]
+    budget = float(context.user_data.get("bt_budget", 1000.0))
+
+    await query.edit_message_text(
+        t("research_running", lang, symbol=symbol),
+        parse_mode="Markdown",
+    )
+
+    try:
+        from src.backtest.engine import run_backtest_research
+        loop    = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None, lambda: run_backtest_research(symbol, budget)
+        )
+    except Exception as err:
+        logger.exception("Research failed")
+        await query.edit_message_text(
+            t("research_failed", lang, err=str(err)[:120]),
+            parse_mode="Markdown",
+        )
+        return
+
+    msg = _format_research_msg(results, symbol, budget, lang)
+    if len(msg) > 4090:
+        msg = msg[:4087] + "…"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            t("btn_bt_again", lang), callback_data="menu_research")],
+        [InlineKeyboardButton(
+            t("btn_change_asset", lang), callback_data="menu_research")],
+    ])
+    await query.edit_message_text(
+        msg, parse_mode="MarkdownV2", reply_markup=keyboard,
+    )
+
+
 # ── /mode command ─────────────────────────────────────────────────────────────
 
 async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1152,7 +1283,11 @@ def main():
     app.add_handler(CallbackQueryHandler(
         menu_backtest, pattern="^menu_backtest$"))
     app.add_handler(CallbackQueryHandler(
-        menu_patterns, pattern="^menu_patterns$"))
+        menu_patterns,  pattern="^menu_patterns$"))
+    app.add_handler(CallbackQueryHandler(
+        menu_research,  pattern="^menu_research$"))
+    app.add_handler(CallbackQueryHandler(
+        research_asset_chosen, pattern="^res_asset_"))
     app.add_handler(CallbackQueryHandler(choose_asset,  pattern="^asset_"))
     app.add_handler(CallbackQueryHandler(analyse,       pattern="^analyse$"))
     app.add_handler(CallbackQueryHandler(

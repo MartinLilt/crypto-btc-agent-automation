@@ -35,6 +35,10 @@ STRINGS = {
         "en": "🔬 Patterns",
         "ru": "🔬 Паттерны",
     },
+    "btn_mode_research": {
+        "en": "🧪 Research",
+        "ru": "🧪 Исследование",
+    },
     "pick_asset_live": {
         "en": "📡 *Live analysis*\n\nChoose a token:",
         "ru": "📡 *Живой анализ*\n\nВыбери токен:",
@@ -290,6 +294,36 @@ STRINGS = {
     },
 
     # ── Simulation calculator ─────────────────────────────────────────────────
+    "research_pick_asset": {
+        "en": (
+            "🧪 *Research* — choose asset:\n\n"
+            "_Runs 12 combinations: 4 TP/SL pairs × 3 periods (90d / 180d / 365d)._\n"
+            "_Takes about 60 seconds._"
+        ),
+        "ru": (
+            "🧪 *Исследование* — выбери актив:\n\n"
+            "_Запустит 12 комбинаций: 4 пары TP/SL × 3 периода (90 / 180 / 365 дней)._\n"
+            "_Займёт около 60 секунд._"
+        ),
+    },
+    "research_running": {
+        "en": (
+            "🧪 *Research — {symbol}*\n\n"
+            "⏳ Running 12 simulations...\n"
+            "_4 TP/SL pairs × 3 periods (90d / 180d / 365d)_\n\n"
+            "_Takes 60-90 seconds. Please wait._"
+        ),
+        "ru": (
+            "🧪 *Исследование — {symbol}*\n\n"
+            "⏳ Запускаю 12 симуляций...\n"
+            "_4 пары TP/SL × 3 периода (90 / 180 / 365 дней)_\n\n"
+            "_Займёт 60-90 секунд. Подожди._"
+        ),
+    },
+    "research_failed": {
+        "en": "❌ Research failed: `{err}`",
+        "ru": "❌ Ошибка исследования: `{err}`",
+    },
     "bt_pick_asset": {
         "en": "🧮 *Simulation* — choose asset:",
         "ru": "🧮 *Симуляция* — выбери актив:",

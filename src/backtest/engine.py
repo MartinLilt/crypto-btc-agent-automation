@@ -500,7 +500,85 @@ def _calc_stats(trades: list, total_candles: int,
     }
 
 
-# ── 5. Main entry point ───────────────────────────────────────────────────────
+# ── 5. Shared simulation loop ─────────────────────────────────────────────────
+
+RESEARCH_TP_SL = [
+    (1.5, 0.75),
+    (2.0, 1.0),
+    (2.5, 1.0),
+    (3.0, 1.5),
+]
+RESEARCH_PERIODS = [90, 180, 365]
+
+
+def _run_window_loop(
+    symbol: str,
+    candles: list,
+    weekly_ema21_index: list,
+    tp_pct: float,
+    sl_pct: float,
+) -> tuple[list, int]:
+    """
+    Slide the signal window over candles and simulate trades.
+    Returns (trades_raw, total_candles_evaluated).
+    Shared by run_backtest and run_backtest_research.
+    """
+    total_candles = len(candles) - WARMUP_CANDLES
+    trades_raw = []
+
+    for i in range(WARMUP_CANDLES, len(candles) - 1):
+        window = candles[max(0, i - WARMUP_CANDLES):i + 1]
+        ts_ms  = candles[i]["open_time_ms"]
+
+        signal, snapshot = _eval_bar(
+            window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
+            weekly_ema21=weekly_ema21_index[i],
+        )
+        if not signal:
+            continue
+
+        outcome = _simulate_trade(candles, i, tp_pct, sl_pct)
+        if outcome["result"] == "NO_DATA":
+            continue
+
+        l1  = snapshot["l1"];  l2  = snapshot["l2"];  l3 = snapshot["l3"]
+        l8  = snapshot["l8"];  l9  = snapshot["l9"];  l10 = snapshot["l10"]
+
+        trades_raw.append({
+            "symbol":        symbol,
+            "entry_time":    snapshot["entry_time"],
+            "entry_price":   outcome["entry_price"],
+            "weekday":       snapshot["weekday"],
+            "hour_utc":      snapshot["hour_utc"],
+            "l1_atr":        l1.get("atr"),
+            "l1_adx":        l1.get("adx"),
+            "l2_ema50":      l2.get("ema50"),
+            "l2_ema200":     l2.get("ema200"),
+            "l2_gap_pct":    l2.get("gap_pct"),
+            "l3_rsi":        l3.get("rsi"),
+            "l3_macd_hist":  l3.get("macd_hist"),
+            "l4_pass":       1,
+            "l5_spread_pct": snapshot["l5"].get("spread", 0) / candles[i]["close"] * 100,
+            "l6_rr_ratio":   snapshot["l6"].get("rr_ratio"),
+            "l8_funding":    l8.get("score"),
+            "l8_oi_chg":     l8.get("n_blockers", 0),
+            "l9_fg_value":   l9.get("score"),
+            "l10_buy_ratio": l10.get("buy_ratio_pct"),
+            "l10_net_vol":   l10.get("net_btc"),
+            "result":              outcome["result"],
+            "exit_price":          outcome["exit_price"],
+            "exit_time":           outcome["exit_time"],
+            "pnl_pct":             outcome["pnl_pct"],
+            "pnl_pct_net_fees":    outcome["pnl_pct_net_fees"],
+            "hold_hours":          outcome["hold_hours"],
+            "max_drawdown_pct":    outcome["max_drawdown_pct"],
+            "total_score":         snapshot["total_score"],
+        })
+
+    return trades_raw, total_candles
+
+
+# ── 6. Main entry point ───────────────────────────────────────────────────────
 
 def run_backtest(
     symbol: str,
@@ -518,76 +596,10 @@ def run_backtest(
     logger.info("Starting backtest: %s %dd TP=%.1f%% SL=%.1f%%",
                 symbol, days, tp_pct, sl_pct)
 
-    # Fetch data (no external F&G / funding needed — L8/L9 use candle data)
     candles = _fetch_candles_full(symbol, days, interval)
-
-    # Pre-compute weekly EMA21 index (O(n) single pass)
     weekly_ema21_index = _build_weekly_ema21_index(candles)
-
-    total_candles = len(candles) - WARMUP_CANDLES
-    trades_raw = []
-
-    # Slide window
-    for i in range(WARMUP_CANDLES, len(candles) - 1):
-        window = candles[max(0, i - WARMUP_CANDLES):i + 1]
-        ts_ms = candles[i]["open_time_ms"]
-
-        signal, snapshot = _eval_bar(
-            window, ts_ms,
-            tp_pct, sl_pct, 0.0, symbol,
-            weekly_ema21=weekly_ema21_index[i],
-        )
-
-        if not signal:
-            continue
-
-        outcome = _simulate_trade(candles, i, tp_pct, sl_pct)
-        if outcome["result"] == "NO_DATA":
-            continue
-
-        l1  = snapshot["l1"]
-        l2  = snapshot["l2"]
-        l3  = snapshot["l3"]
-        l8  = snapshot["l8"]
-        l9  = snapshot["l9"]
-        l10 = snapshot["l10"]
-
-        trade = {
-            "symbol":       symbol,
-            "entry_time":   snapshot["entry_time"],
-            "entry_price":  outcome["entry_price"],
-            "weekday":      snapshot["weekday"],
-            "hour_utc":     snapshot["hour_utc"],
-            # Layer snapshots
-            "l1_atr":        l1.get("atr"),
-            "l1_adx":        l1.get("adx"),
-            "l2_ema50":      l2.get("ema50"),
-            "l2_ema200":     l2.get("ema200"),
-            "l2_gap_pct":    l2.get("gap_pct"),
-            "l3_rsi":        l3.get("rsi"),
-            "l3_macd_hist":  l3.get("macd_hist"),
-            "l4_pass":       1,
-            "l5_spread_pct": (
-                snapshot["l5"].get("spread", 0) /
-                candles[i]["close"] * 100
-            ),
-            "l6_rr_ratio":   snapshot["l6"].get("rr_ratio"),
-            "l8_funding":    l8.get("score"),          # S/R score stored here
-            "l8_oi_chg":     l8.get("n_blockers", 0),  # number of S/R blockers
-            "l9_fg_value":   l9.get("score"),           # candle pattern score
-            "l10_buy_ratio": l10.get("buy_ratio_pct"),
-            "l10_net_vol":   l10.get("net_btc"),
-            # Outcome
-            "result":              outcome["result"],
-            "exit_price":          outcome["exit_price"],
-            "exit_time":           outcome["exit_time"],
-            "pnl_pct":             outcome["pnl_pct"],
-            "pnl_pct_net_fees":    outcome["pnl_pct_net_fees"],
-            "hold_hours":          outcome["hold_hours"],
-            "max_drawdown_pct":    outcome["max_drawdown_pct"],
-            "total_score":         snapshot["total_score"],
-        }
-        trades_raw.append(trade)
+    trades_raw, total_candles = _run_window_loop(
+        symbol, candles, weekly_ema21_index, tp_pct, sl_pct)
 
     # Compute stats
     stats = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
@@ -622,3 +634,57 @@ def run_backtest(
         "stats":  stats,
         **stats,
     }
+
+
+# ── 7. Research: grid search over TP/SL × periods ────────────────────────────
+
+def run_backtest_research(
+    symbol: str,
+    budget: float = 1000.0,
+    interval: str = "1h",
+) -> list[dict]:
+    """
+    Run all RESEARCH_TP_SL × RESEARCH_PERIODS combinations.
+    Fetches candles once for the longest period, slices for shorter ones.
+    Returns list of result dicts sorted by Sharpe ratio descending.
+    """
+    init_db()
+    max_days = max(RESEARCH_PERIODS)
+    logger.info("Research: fetching %dd candles for %s", max_days, symbol)
+    candles_full = _fetch_candles_full(symbol, max_days, interval)
+    weekly_full  = _build_weekly_ema21_index(candles_full)
+
+    results = []
+    for days in RESEARCH_PERIODS:
+        needed   = days * 24 + WARMUP_CANDLES
+        candles  = candles_full[-needed:] if len(candles_full) >= needed else candles_full
+        weekly   = weekly_full[-len(candles):]
+
+        for tp_pct, sl_pct in RESEARCH_TP_SL:
+            trades_raw, total_candles = _run_window_loop(
+                symbol, candles, weekly, tp_pct, sl_pct)
+            stats    = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
+            scale    = budget / 100.0
+            annual   = stats["total_pnl_after_tax_pct"] * scale * 365 / max(days, 1)
+            date_from = trades_raw[0]["entry_time"][:10]  if trades_raw else "—"
+            date_to   = trades_raw[-1]["entry_time"][:10] if trades_raw else "—"
+
+            results.append({
+                "symbol":    symbol,
+                "days":      days,
+                "tp_pct":    tp_pct,
+                "sl_pct":    sl_pct,
+                "budget":    budget,
+                "date_from": date_from,
+                "date_to":   date_to,
+                "annual_usd": round(annual, 2),
+                **stats,
+            })
+            logger.info(
+                "Research %s TP=%.1f SL=%.2f %dd → WR=%.1f%% annual=$%.0f",
+                symbol, tp_pct, sl_pct, days,
+                stats["win_rate_pct"], annual,
+            )
+
+    results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
+    return results
