@@ -94,11 +94,23 @@ docker-compose up --build
 - Backtest window = 220 candles minimum (200 for EMA-200 warmup + 20 buffer)
 - MarkdownV2 used in backtest results → escape with `_esc()` in main.py
 
-## Obsidian Vault
-Project knowledge base lives in `obsidian/`. Update it when:
-- Architecture changes
-- New layers added / thresholds tuned
-- Significant bugs fixed (add to DevLog)
-- Roadmap items completed
+## Obsidian Vault (Auto-Loaded)
+Project knowledge base lives in `obsidian/`. Files are auto-included via `.claudeinclude`.
 
-See `obsidian/00-Index/README.md` for vault structure.
+### Vault Structure
+```
+obsidian/
+  00-Index/README.md       <- Hub: quick links, key numbers, status
+  01-Architecture/         <- System design, layers, features
+  02-DevLog/Dev Log.md     <- Reverse-chrono change log
+  03-Roadmap/              <- Features, ideas, bugs
+```
+
+### When to Update
+- **Architecture changes** → update relevant `01-Architecture/*.md`
+- **New layers / thresholds** → update `Signal Layers Deep Dive.md`
+- **Session changes** → prepend to `02-DevLog/Dev Log.md` (newest first)
+- **Roadmap progress** → update `03-Roadmap/Roadmap & Ideas.md`
+
+### Linking Convention
+Use `[[Page Name]]` for internal links. Keep hub pages updated with new links.

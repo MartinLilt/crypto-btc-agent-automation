@@ -11,13 +11,24 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"[$(date '+%Y-%m-%d %H:%M')] File modified: $CLAUDE_FILE_PATH\" >> /tmp/claude-session-changes.log 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "echo '[Claude stopped] Check if obsidian/02-DevLog/Dev Log.md needs updating with changes from this session.' >> /tmp/claude-obsidian-reminder.txt"
+            "command": "if [ -f /tmp/claude-session-changes.log ]; then echo '\\n---\\n[Session ended - changes made:]' && cat /tmp/claude-session-changes.log && echo '\\nUpdate obsidian/02-DevLog/Dev Log.md if significant changes were made.' && rm /tmp/claude-session-changes.log; fi"
           }
         ]
       }
