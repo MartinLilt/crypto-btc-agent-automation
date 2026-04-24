@@ -4,6 +4,36 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-24 — Obsidian vault auto-sync setup
+
+**Summary:** Configured Obsidian vault to be automatically read by Claude and improved hub structure.
+
+### Changes
+
+- **`.claudeinclude`** (new) - Auto-loads vault files into Claude context:
+  - `obsidian/00-Index/README.md`
+  - `obsidian/01-Architecture/*.md`
+  - `obsidian/02-DevLog/Dev Log.md`
+  - `obsidian/03-Roadmap/Roadmap & Ideas.md`
+
+- **`.claude/settings.json`** - Added hooks:
+  - `PreToolUse` (Edit|Write) - logs file changes to temp file
+  - `Stop` - reminds to update DevLog if changes were made
+
+- **`CLAUDE.md`** - Updated Obsidian section with vault structure and update guidelines
+
+- **`obsidian/00-Index/README.md`** - Rebuilt as main hub:
+  - Quick links by topic (Signal System, Core Systems, Business Logic, History)
+  - Key numbers table
+  - File map
+  - Update guidelines
+
+### Result
+
+Claude now auto-reads vault on session start. Changes tracked via hooks.
+
+---
+
 ## 2026-04-22 — Research redesigned: fully automatic, no budget picker
 
 **Summary:** Research flow changed from "asset + budget → 12 combos" to fully automatic "asset → 12 combos → best combo + budget projection table for all 6 budgets."
