@@ -4,6 +4,47 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-27 — Removed weekly EMA21 macro-bear filter
+
+**Summary:** Backtest evidence showed the weekly EMA21 hard-block was net negative across all tested periods. Removed the filter entirely along with its supporting code.
+
+### Why
+
+Live diagnostic showed BTC blocked from any signals (price=$76,498, EMA50=$76,877 — death cross, L2=1/10, ADX=29.6 in danger-zone hard-block). Investigation revealed weekly EMA21 hard-filter was contributing.
+
+Backtest comparison on 720 days of BTC/USDT 1h candles (2024-05 → 2026-04):
+
+| Period | TP/SL | Hard-block (old) | No-filter | Soft-2 penalty |
+|--------|-------|------------------|-----------|----------------|
+| 180d | 3.0/1.5 | **0** sigs | 7 sigs, **+10.64%** WR=57% | 3 sigs, +2.56% |
+| 365d | 3.0/1.5 | 18 sigs, +7.5% | 26 sigs, **+19.64%** | 21 sigs, +10.05% |
+| 720d | 3.0/1.5 | 57 sigs, +16.87% | 69 sigs, **+22.22%** | 62 sigs, +16.03% |
+
+Hard-block killed entire 6-month windows of profitable trades. Soft-2 penalty (deducts 2 from total_score if price < weekly EMA21) was also worse than no-filter on every metric — it drops *winning* signals along with losers since WR was barely affected. ADX hard-block (25-40) and the score threshold already provide adequate downtrend protection.
+
+### Changes
+
+- **`src/backtest/engine.py`**:
+  - Removed `_build_weekly_ema21_index()` function (~40 lines)
+  - Removed `weekly_ema21` parameter from `_eval_bar()`
+  - Removed `weekly_ema21_index` parameter from `_run_window_loop()`
+  - Removed `_build_weekly_ema21_index()` calls in `run_backtest()` and `run_backtest_research()`
+  - Removed weekly_block hard filter from entry logic
+
+### Final research grid (all periods, no weekly filter)
+
+Best by Sharpe: TP=3.0% / SL=1.5% over 90d → 5 signals, WR=80%, Net=+12.66%
+Best by Net P&L: TP=3.0% / SL=1.5% over 365d → 26 signals, WR=46.2%, Net=+19.64%
+
+### Notes
+
+- Live-analysis path (main.py) was not affected — weekly EMA21 was backtest-only
+- LT 15% capital-gains tax accounting unchanged
+- Current bar still legitimately blocked by L2 trend score + ADX danger zone — that's correct behavior, downtrend
+- Dataset spans 720 days (May 2024 - Apr 2026); no 2022-style deep bear market in the sample. If a longer dataset becomes available, may want to re-test whether weekly filter helps in extreme drawdowns
+
+---
+
 ## 2026-04-24 — Obsidian vault auto-sync setup
 
 **Summary:** Configured Obsidian vault to be automatically read by Claude and improved hub structure.
