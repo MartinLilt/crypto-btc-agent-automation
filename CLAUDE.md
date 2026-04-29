@@ -30,7 +30,14 @@ Users interact via Telegram inline buttons. Supports EN/RU. Deployed via Docker.
 | `scripts/diagnose.py` | Debug tool — shows live layer-by-layer status |
 
 ## Supported Assets
-`BTCUSDT` only
+`BTCUSDT`, `SOLUSDT`, `ETHUSDT`
+
+Backtest evidence (720d, TP=3%/SL=1.5%, after fees + LT 15% tax):
+- BTC: +18.89%, WR=39%, profitable 3/4 quarters
+- ETH: +8.32%, WR=39%, profitable 3/4 quarters
+- SOL: +51.17%, WR=48%, profitable 4/4 quarters (strongest)
+
+Score-based system uses universal thresholds; per-asset tuning not currently needed.
 
 ## Signal Architecture — 10 Layers
 All 10 must pass → `should_enter = True`.

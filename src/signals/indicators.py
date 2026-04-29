@@ -422,6 +422,7 @@ def is_uptrend(candles: list, candles_4h: list | None = None) -> tuple[int, dict
         "price":               price,
         "ema50":               round(ema50, 2),
         "ema200":              round(ema200, 2),
+        "gap_pct":             round((ema50 - ema200) / ema200 * 100, 3) if ema200 else 0.0,
         "ema50_slope_ok":      ema50_slope_ok,
         "golden_cross":        recent_cross,
         "established_uptrend": established,
