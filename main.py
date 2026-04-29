@@ -34,7 +34,9 @@ CFG = "agent_config"
 
 # ── Supported assets ──────────────────────────────────────────────────────────
 ASSETS = [
-    ("₿ Bitcoin", "BTCUSDT"),
+    ("₿ Bitcoin",  "BTCUSDT"),
+    ("◎ Solana",   "SOLUSDT"),
+    ("Ξ Ethereum", "ETHUSDT"),
 ]
 
 # Default trading params (no user input needed)
