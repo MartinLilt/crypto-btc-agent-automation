@@ -60,6 +60,9 @@ LT_TAX_RATE       = 0.15  # Lithuania 15% capital gains tax (≤€120k/year, 20
 
 # ── 1. Data fetching ──────────────────────────────────────────────────────────
 
+_INTERVAL_BARS_PER_DAY = {"1h": 24, "4h": 6, "1d": 1}
+
+
 def _fetch_candles_full(symbol: str, days: int, interval: str = "1h") -> list:
     """
     Download full candle history for given days.
@@ -67,7 +70,8 @@ def _fetch_candles_full(symbol: str, days: int, interval: str = "1h") -> list:
     Each candle: {open_time_ms, open, high, low, close, volume, taker_buy_vol}
     """
     limit = 1000
-    needed = days * 24 + WARMUP_CANDLES  # extra for indicators warmup
+    bars_per_day = _INTERVAL_BARS_PER_DAY.get(interval, 24)
+    needed = days * bars_per_day + WARMUP_CANDLES  # extra for indicators warmup
     url = f"{_BINANCE_REST}/api/v3/klines"
     all_candles = []
     end_time = None
@@ -185,9 +189,11 @@ def _fetch_funding_history(symbol: str) -> list:
 
 def _eval_bar(candles_window: list, ts_ms: int,
               tp_pct: float, sl_pct: float,
-              spread_approx: float, symbol: str) -> tuple[bool, dict]:
+              spread_approx: float, symbol: str,
+              candles_4h: list | None = None) -> tuple[bool, dict]:
     """
     Run all layers on a window of candles ending at index i.
+    candles_4h is the slice of 4h candles available at ts_ms (matches live behavior).
     Returns (signal: bool, layer_snapshot: dict)
     """
     # L1 — Volatility (score-based, relaxed ADX floor for backtest)
@@ -202,7 +208,7 @@ def _eval_bar(candles_window: list, ts_ms: int,
         l1["bt_override_score"] = l1_score
 
     # L2 — Trend (relaxed for backtest: give partial credit for price > EMA50)
-    l2_score, l2 = is_uptrend(candles_window)
+    l2_score, l2 = is_uptrend(candles_window, candles_4h=candles_4h)
     if l2_score < 4:
         price_ok = l2.get("price", 0) > l2.get("ema50", 0)
         slope_ok = l2.get("ema50_slope_ok", False)
@@ -210,8 +216,8 @@ def _eval_bar(candles_window: list, ts_ms: int,
             l2_score = max(l2_score, 4)
             l2["bt_override_score"] = l2_score
 
-    # L3 — Momentum
-    l3_score, l3 = is_not_overbought(candles_window)
+    # L3 — Momentum (multi-timeframe with 4h RSI)
+    l3_score, l3 = is_not_overbought(candles_window, candles_4h=candles_4h)
 
     # L4 — Volume Spike (real computation from candle window)
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -250,8 +256,8 @@ def _eval_bar(candles_window: list, ts_ms: int,
     # L8 — S/R Proximity (computed from candle window — no external data needed)
     l8_score, l8 = check_sr_proximity(candles_window, tp_pct=tp_pct)
 
-    # L9 — Candle Pattern (last 3 candles of window)
-    l9_score, l9 = detect_candle_patterns(candles_window)
+    # L9 — Candle Pattern (last 3 candles of window, with 4h confirmation)
+    l9_score, l9 = detect_candle_patterns(candles_window, candles_4h=candles_4h)
 
     # L10 — Buy Pressure (6h lookback — more reactive than 24h)
     total_vol = sum(c["volume"] for c in candles_window[-6:]) or 1
@@ -458,14 +464,35 @@ RESEARCH_TP_SL = [
 RESEARCH_PERIODS = [90, 180, 365]
 
 
+def _slice_4h_at(candles_4h: list, ts_ms: int, lookback: int = 210) -> list | None:
+    """
+    Return the slice of 4h candles that would be available at ts_ms.
+    Mirrors what live mode sees: latest closed 4h candle plus prior history.
+    """
+    if not candles_4h:
+        return None
+    # Find latest 4h candle whose open_time_ms <= ts_ms (binary search via linear scan)
+    latest_idx = -1
+    for j in range(len(candles_4h) - 1, -1, -1):
+        if candles_4h[j]["open_time_ms"] <= ts_ms:
+            latest_idx = j
+            break
+    if latest_idx < 0:
+        return None
+    start = max(0, latest_idx - lookback + 1)
+    return candles_4h[start:latest_idx + 1]
+
+
 def _run_window_loop(
     symbol: str,
     candles: list,
     tp_pct: float,
     sl_pct: float,
+    candles_4h: list | None = None,
 ) -> tuple[list, int]:
     """
     Slide the signal window over candles and simulate trades.
+    candles_4h enables multi-timeframe confirmation (matches live behavior).
     Returns (trades_raw, total_candles_evaluated).
     Shared by run_backtest and run_backtest_research.
     """
@@ -475,9 +502,11 @@ def _run_window_loop(
     for i in range(WARMUP_CANDLES, len(candles) - 1):
         window = candles[max(0, i - WARMUP_CANDLES):i + 1]
         ts_ms  = candles[i]["open_time_ms"]
+        slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
 
         signal, snapshot = _eval_bar(
             window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
+            candles_4h=slice_4h,
         )
         if not signal:
             continue
@@ -542,8 +571,9 @@ def run_backtest(
                 symbol, days, tp_pct, sl_pct)
 
     candles = _fetch_candles_full(symbol, days, interval)
+    candles_4h = _fetch_candles_full(symbol, days, "4h") if interval == "1h" else None
     trades_raw, total_candles = _run_window_loop(
-        symbol, candles, tp_pct, sl_pct)
+        symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h)
 
     # Compute stats
     stats = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
@@ -596,6 +626,7 @@ def run_backtest_research(
     max_days = max(RESEARCH_PERIODS)
     logger.info("Research: fetching %dd candles for %s", max_days, symbol)
     candles_full = _fetch_candles_full(symbol, max_days, interval)
+    candles_4h_full = _fetch_candles_full(symbol, max_days, "4h") if interval == "1h" else None
 
     results = []
     for days in RESEARCH_PERIODS:
@@ -604,7 +635,7 @@ def run_backtest_research(
 
         for tp_pct, sl_pct in RESEARCH_TP_SL:
             trades_raw, total_candles = _run_window_loop(
-                symbol, candles, tp_pct, sl_pct)
+                symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h_full)
             stats     = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
             date_from = trades_raw[0]["entry_time"][:10]  if trades_raw else "—"
             date_to   = trades_raw[-1]["entry_time"][:10] if trades_raw else "—"
