@@ -181,58 +181,11 @@ def _fetch_funding_history(symbol: str) -> list:
         return []
 
 
-# ── 1b. Weekly EMA21 pre-computation ─────────────────────────────────────────
-
-def _build_weekly_ema21_index(candles: list) -> dict:
-    """
-    Derive weekly OHLCV from hourly candles and pre-compute EMA21 on weekly closes.
-    Returns {hourly_index: ema21_value | None} for every candle index.
-    ema21 is the value valid at the START of that hour (i.e. known before the bar).
-    """
-    if not candles:
-        return {}
-
-    # Assign each candle to its week (Mon 00:00 UTC)
-    week_closes: dict[tuple, float] = {}   # (year, isoweek) → last close seen
-    weekly_ema21_at: list = [None] * len(candles)
-
-    k = 2 / (21 + 1)
-    weekly_closes_list: list[float] = []
-    current_ema: float | None = None
-    current_week: tuple | None = None
-    last_ema_at_week_end: float | None = None
-
-    for i, c in enumerate(candles):
-        dt = datetime.fromtimestamp(c["open_time_ms"] / 1000, tz=timezone.utc)
-        iso = dt.isocalendar()
-        week_key = (iso[0], iso[1])
-
-        if week_key != current_week:
-            # New week started — lock in previous week's close and update EMA
-            if current_week is not None and current_week in week_closes:
-                prev_close = week_closes[current_week]
-                weekly_closes_list.append(prev_close)
-                n = len(weekly_closes_list)
-                if n >= 21:
-                    if n == 21:
-                        current_ema = sum(weekly_closes_list) / 21
-                    else:
-                        current_ema = prev_close * k + current_ema * (1 - k)
-                    last_ema_at_week_end = current_ema
-            current_week = week_key
-
-        week_closes[week_key] = c["close"]
-        weekly_ema21_at[i] = last_ema_at_week_end
-
-    return weekly_ema21_at
-
-
 # ── 2. Per-bar layer evaluation ───────────────────────────────────────────────
 
 def _eval_bar(candles_window: list, ts_ms: int,
               tp_pct: float, sl_pct: float,
-              spread_approx: float, symbol: str,
-              weekly_ema21: float | None = None) -> tuple[bool, dict]:
+              spread_approx: float, symbol: str) -> tuple[bool, dict]:
     """
     Run all layers on a window of candles ending at index i.
     Returns (signal: bool, layer_snapshot: dict)
@@ -326,13 +279,7 @@ def _eval_bar(candles_window: list, ts_ms: int,
     adx_val = l1.get("adx", 0)
     adx_block = 25 <= adx_val < 40
 
-    # Hard filter: weekly EMA21 — skip entries in macro bear regime
-    weekly_block = (
-        weekly_ema21 is not None
-        and candles_window[-1]["close"] < weekly_ema21
-    )
-
-    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not adx_block and not weekly_block
+    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not adx_block
 
     snapshot = {
         "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
@@ -514,7 +461,6 @@ RESEARCH_PERIODS = [90, 180, 365]
 def _run_window_loop(
     symbol: str,
     candles: list,
-    weekly_ema21_index: list,
     tp_pct: float,
     sl_pct: float,
 ) -> tuple[list, int]:
@@ -532,7 +478,6 @@ def _run_window_loop(
 
         signal, snapshot = _eval_bar(
             window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
-            weekly_ema21=weekly_ema21_index[i],
         )
         if not signal:
             continue
@@ -597,9 +542,8 @@ def run_backtest(
                 symbol, days, tp_pct, sl_pct)
 
     candles = _fetch_candles_full(symbol, days, interval)
-    weekly_ema21_index = _build_weekly_ema21_index(candles)
     trades_raw, total_candles = _run_window_loop(
-        symbol, candles, weekly_ema21_index, tp_pct, sl_pct)
+        symbol, candles, tp_pct, sl_pct)
 
     # Compute stats
     stats = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
@@ -652,17 +596,15 @@ def run_backtest_research(
     max_days = max(RESEARCH_PERIODS)
     logger.info("Research: fetching %dd candles for %s", max_days, symbol)
     candles_full = _fetch_candles_full(symbol, max_days, interval)
-    weekly_full  = _build_weekly_ema21_index(candles_full)
 
     results = []
     for days in RESEARCH_PERIODS:
         needed   = days * 24 + WARMUP_CANDLES
         candles  = candles_full[-needed:] if len(candles_full) >= needed else candles_full
-        weekly   = weekly_full[-len(candles):]
 
         for tp_pct, sl_pct in RESEARCH_TP_SL:
             trades_raw, total_candles = _run_window_loop(
-                symbol, candles, weekly, tp_pct, sl_pct)
+                symbol, candles, tp_pct, sl_pct)
             stats     = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
             date_from = trades_raw[0]["entry_time"][:10]  if trades_raw else "—"
             date_to   = trades_raw[-1]["entry_time"][:10] if trades_raw else "—"
