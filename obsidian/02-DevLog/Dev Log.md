@@ -4,6 +4,32 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-27 — Research session: cooldown experiment (reverted) + ETH/SOL walk-forward
+
+**Summary:** Investigated Q1 2024 BTC losing quarter (−2.77%). Tested 6h signal cooldown hypothesis on BTC/ETH/SOL — negative result, change reverted. Discovered SOL is the strongest performer (4/4 profitable quarters). Found `l2_gap_pct` data integrity issue.
+
+### Findings (no code changes shipped)
+
+- **Cooldown 6h ≠ improvement.** BTC: −4.6% net. SOL: −45.6% net (catastrophic). ETH: +11.6% net (only winner). Universal cooldown destroys trend-continuation edge. See [[Roadmap & Ideas]] research section for the full table.
+- **SOL >> BTC > ETH.** Over 720d: BTC +22.22%, ETH +9.79%, **SOL +60.20%**. SOL profitable in 4/4 quarters incl. Q1 2024 where BTC/ETH lost money.
+- **Q1 2024 BTC losers had no distinguishing metric.** RSI ≈ winners (60.6 vs 60.8), score ≈ winners (73.1 vs 73.8), buy_ratio ≈ winners. ADX bimodal (either <25 or >40, not in danger zone) for both groups.
+- **Bug found: `l2_gap_pct = 0.00` for all 18 Q1 trades.** Metric not being propagated from `is_uptrend()` snapshot to the trade row in `_run_window_loop()`. Logged as backlog issue.
+
+### Realistic expectations updated
+
+- BTC annual net (post-fees, post-LT-tax): ~10–15%
+- SOL annual net: ~30%+
+- Worst-case quarter: −3% (BTC) to −7% (ETH)
+- Timeouts (13% of trades) contribute slightly positive — not a P&L leak
+
+### Open questions
+
+- Extend bot to SOL/ETH? CLAUDE.md says BTCUSDT only, but data suggests SOL is the better target
+- Q1→Q4 monotonic improvement on BTC: real edge or in-sample overfit? Needs 90d out-of-sample validation
+- Smart cooldown: block only consecutive SL_HIT (not TP_HIT) within N hours?
+
+---
+
 ## 2026-04-27 — Removed weekly EMA21 macro-bear filter
 
 **Summary:** Backtest evidence showed the weekly EMA21 hard-block was net negative across all tested periods. Removed the filter entirely along with its supporting code.
