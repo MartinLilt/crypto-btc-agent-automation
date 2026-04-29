@@ -4,6 +4,43 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-27 — Paper trading mode (autonomous logger)
+
+**Summary:** Added autonomous paper-trading infrastructure: signals are evaluated and tracked without manual interaction. Designed to run hourly via cron over 30-60 days for out-of-sample validation.
+
+### Changes
+
+- **`src/data/db.py`**: New `paper_trades` table with TP/SL prices, layer snapshot JSON, and notification flags. CRUD helpers: `open_paper_trade`, `get_open_paper_trades`, `has_open_paper_trade`, `close_paper_trade`, `mark_paper_notified`, `get_paper_trades`.
+- **`scripts/paper_log.py`** (new): One-shot script that
+  1. Fetches latest 14d of candles per asset
+  2. Updates open trades — scans for TP/SL/timeout (48h), conservative (SL before TP)
+  3. Evaluates new signals on the second-to-last candle, opens trade at next candle's open price
+  4. Sends Telegram notifications on open/close (optional, requires `PAPER_NOTIFY_CHAT_ID` env var)
+- **`scripts/paper_report.py`** (new): Report tool with `--symbol`, `--days` filters; compares live WR vs backtest baseline.
+
+### Operating procedure
+
+```bash
+# Hourly cron entry:
+0 * * * * cd /path/to/repo && .venv/bin/python -m scripts.paper_log >> /var/log/paper.log 2>&1
+
+# Manual report:
+python -m scripts.paper_report
+python -m scripts.paper_report --days 30 --symbol SOLUSDT
+```
+
+### Backtest baseline (for comparison after 30 days)
+
+| Asset | Expected WR | Net% per signal | Sigs/30d (estimated) |
+|-------|-------------|-----------------|----------------------|
+| BTC | 39.1% | +0.32% | 2.9 |
+| ETH | 38.9% | +0.11% | 3.8 |
+| SOL | 47.8% | +0.45% | 5.6 |
+
+**Δ vs Backtest** column in the report shows live deviation in percentage points. ±5pp is statistical noise for the first 30 days; ±15pp+ would indicate genuine slippage/fee/regime drift.
+
+---
+
 ## 2026-04-27 — Research session: cooldown experiment (reverted) + ETH/SOL walk-forward
 
 **Summary:** Investigated Q1 2024 BTC losing quarter (−2.77%). Tested 6h signal cooldown hypothesis on BTC/ETH/SOL — negative result, change reverted. Discovered SOL is the strongest performer (4/4 profitable quarters). Found `l2_gap_pct` data integrity issue.
