@@ -4,6 +4,23 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-29 — Fix: bot now remembers user language across restarts
+
+**Symptom:** Different analyses/tools ran in different languages because every bot restart wiped each user's `_lang` preference back to the "en" default. `context.user_data` was purely in-memory.
+
+**Fix:** Added `PicklePersistence(filepath="data/bot_state.pkl")` to the `ApplicationBuilder`. python-telegram-bot v21 will now serialize `user_data` (and `chat_data`) to disk on every update and restore on restart.
+
+```python
+persistence = PicklePersistence(filepath="data/bot_state.pkl")
+app = ApplicationBuilder().token(BOT_TOKEN).persistence(persistence)...
+```
+
+State file is created lazily on first user interaction. `data/` was already gitignored.
+
+Roadmap "Known Issues" item ticked off.
+
+---
+
 ## 2026-04-27 — Research toolkit exposed in Telegram bot
 
 **Summary:** Reorganized Research menu in the bot from single-action to a sub-menu with three tools: Grid Search (existing), Walk-Forward (new), and Paper Dashboard (new). Brings most session-time analysis capabilities to the user's phone.
