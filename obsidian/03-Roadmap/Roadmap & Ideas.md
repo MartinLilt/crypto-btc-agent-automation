@@ -55,7 +55,7 @@
 
 ## Known Issues / Bugs 🐛
 
-- User state lost on bot restart (`context.user_data` is in-memory)
+- ~~User state lost on bot restart~~ — fixed 2026-04-29 via `PicklePersistence` to `data/bot_state.pkl`
 - Backtest slow for 1-year periods (Research: 1 fetch for 12 combos mitigates this)
 - MarkdownV2 escaping fragile — `_esc()` must be applied to all dynamic values; Research uses plain `Markdown` instead to avoid issues with float dots
 

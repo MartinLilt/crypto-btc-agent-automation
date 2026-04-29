@@ -13,9 +13,10 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
+    PicklePersistence,
 )
 from src.bot.strings import t
 
@@ -1552,7 +1553,14 @@ async def post_init(app):
 
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    # Persist user_data (language, picked asset) across bot restarts.
+    # Without this, every restart wiped each user's language preference back to "en".
+    persistence = PicklePersistence(filepath="data/bot_state.pkl")
+    app = (ApplicationBuilder()
+           .token(BOT_TOKEN)
+           .persistence(persistence)
+           .post_init(post_init)
+           .build())
 
     # ── Core ──────────────────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start",    start))
