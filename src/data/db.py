@@ -209,6 +209,31 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_positions_status
             ON positions(status);
+
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol          TEXT    NOT NULL,
+            entry_time      TEXT    NOT NULL,
+            entry_price     REAL    NOT NULL,
+            tp_pct          REAL    NOT NULL,
+            sl_pct          REAL    NOT NULL,
+            tp_price        REAL    NOT NULL,
+            sl_price        REAL    NOT NULL,
+            total_score     INTEGER,
+            layer_snapshot  TEXT,
+            status          TEXT    NOT NULL DEFAULT 'OPEN',
+            exit_time       TEXT,
+            exit_price      REAL,
+            pnl_pct         REAL,
+            pnl_pct_net_fees REAL,
+            hold_hours      INTEGER,
+            notified_open   INTEGER DEFAULT 0,
+            notified_close  INTEGER DEFAULT 0,
+            created_at      TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_paper_status ON paper_trades(status);
+        CREATE INDEX IF NOT EXISTS idx_paper_symbol ON paper_trades(symbol);
         """)
     # Migrations — add columns that didn't exist in older schema
     with _conn() as con:
@@ -432,4 +457,87 @@ def get_closed_positions(limit: int = 20) -> list[dict]:
                ORDER BY exit_time DESC LIMIT ?""",
             (limit,),
         ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ── Paper trades CRUD ─────────────────────────────────────────────────────────
+
+def open_paper_trade(data: dict) -> int:
+    """Insert a new OPEN paper trade. Returns new row id."""
+    cols = [
+        "symbol", "entry_time", "entry_price",
+        "tp_pct", "sl_pct", "tp_price", "sl_price",
+        "total_score", "layer_snapshot",
+    ]
+    present = {k: data[k] for k in cols if k in data}
+    placeholders = ", ".join("?" * len(present))
+    col_names = ", ".join(present.keys())
+    with _conn() as con:
+        cur = con.execute(
+            f"INSERT INTO paper_trades ({col_names}) VALUES ({placeholders})",
+            list(present.values()),
+        )
+        return cur.lastrowid
+
+
+def get_open_paper_trades() -> list[dict]:
+    """Return all OPEN paper trades across symbols."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM paper_trades WHERE status = 'OPEN' ORDER BY entry_time"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def has_open_paper_trade(symbol: str) -> bool:
+    """Check if there's an OPEN paper trade for this symbol."""
+    with _conn() as con:
+        row = con.execute(
+            "SELECT 1 FROM paper_trades WHERE symbol = ? AND status = 'OPEN' LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        return row is not None
+
+
+def close_paper_trade(trade_id: int, status: str, exit_price: float,
+                      exit_time: str, pnl_pct: float, pnl_pct_net_fees: float,
+                      hold_hours: int):
+    """Mark paper trade as closed with outcome."""
+    with _conn() as con:
+        con.execute(
+            """UPDATE paper_trades
+               SET status=?, exit_price=?, exit_time=?, pnl_pct=?,
+                   pnl_pct_net_fees=?, hold_hours=?
+               WHERE id=?""",
+            (status, exit_price, exit_time, pnl_pct, pnl_pct_net_fees,
+             hold_hours, trade_id),
+        )
+
+
+def mark_paper_notified(trade_id: int, kind: str):
+    """Mark notification as sent. kind = 'open' or 'close'."""
+    col = f"notified_{kind}"
+    with _conn() as con:
+        con.execute(
+            f"UPDATE paper_trades SET {col}=1 WHERE id=?",
+            (trade_id,),
+        )
+
+
+def get_paper_trades(symbol: str | None = None,
+                     status: str | None = None,
+                     limit: int = 500) -> list[dict]:
+    """Load paper trades with optional symbol/status filters."""
+    sql = "SELECT * FROM paper_trades WHERE 1=1"
+    params: list = []
+    if symbol:
+        sql += " AND symbol = ?"
+        params.append(symbol)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY entry_time DESC LIMIT ?"
+    params.append(limit)
+    with _conn() as con:
+        rows = con.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
