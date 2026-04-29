@@ -294,16 +294,80 @@ STRINGS = {
     },
 
     # ── Simulation calculator ─────────────────────────────────────────────────
-    "research_pick_asset": {
+    "research_pick_type": {
         "en": (
-            "🧪 *Research* — choose asset:\n\n"
-            "_Automatically tests all combinations: 4 TP/SL pairs × 3 periods (90d / 180d / 365d)._\n"
-            "_Shows best combo + budget projections. Takes ~60 seconds._"
+            "🔬 *Research Tools* — choose:\n\n"
+            "🧪 *Grid Search* — 4 TP/SL × 3 periods, ranks best combos\n"
+            "🔬 *Walk-Forward* — train on first half, validate on second half (catches overfit)\n"
+            "📊 *Paper Trades* — live paper-trading dashboard"
         ),
         "ru": (
-            "🧪 *Исследование* — выбери актив:\n\n"
-            "_Автоматически проверит все комбинации: 4 пары TP/SL × 3 периода (90 / 180 / 365 дней)._\n"
-            "_Покажет лучшую комбинацию и прогноз по бюджетам. Займёт ~60 секунд._"
+            "🔬 *Инструменты Исследования* — выбери:\n\n"
+            "🧪 *Грид-поиск* — 4 TP/SL × 3 периода, ранжирует лучшие комбо\n"
+            "🔬 *Walk-Forward* — обучение на первой половине, валидация на второй (ловит переподгонку)\n"
+            "📊 *Paper-сделки* — дашборд live paper-trading"
+        ),
+    },
+    "btn_research_grid": {
+        "en": "🧪 Grid Search",
+        "ru": "🧪 Грид-поиск",
+    },
+    "btn_research_walkforward": {
+        "en": "🔬 Walk-Forward",
+        "ru": "🔬 Walk-Forward",
+    },
+    "btn_research_paper": {
+        "en": "📊 Paper Trades",
+        "ru": "📊 Paper-сделки",
+    },
+    "research_pick_asset": {
+        "en": (
+            "🧪 *Grid Search* — choose asset:\n\n"
+            "_Tests 4 TP/SL pairs × 3 periods (90/180/365d). Takes ~60 seconds._"
+        ),
+        "ru": (
+            "🧪 *Грид-поиск* — выбери актив:\n\n"
+            "_Проверит 4 пары TP/SL × 3 периода (90/180/365 дн). Займёт ~60 секунд._"
+        ),
+    },
+    "wf_pick_asset": {
+        "en": (
+            "🔬 *Walk-Forward* — choose asset:\n\n"
+            "_Splits 720d in halves: optimizes on first, validates on second. "
+            "Catches overfit. Takes ~60 seconds._"
+        ),
+        "ru": (
+            "🔬 *Walk-Forward* — выбери актив:\n\n"
+            "_Делит 720 дней пополам: оптимизирует на первой, валидирует на второй. "
+            "Ловит переподгонку. Займёт ~60 секунд._"
+        ),
+    },
+    "wf_running": {
+        "en": (
+            "🔬 *Walk-Forward — {symbol}*\n\n"
+            "⏳ Running split-half validation...\n"
+            "_Takes ~60 seconds. Please wait._"
+        ),
+        "ru": (
+            "🔬 *Walk-Forward — {symbol}*\n\n"
+            "⏳ Запускаю валидацию по половинам...\n"
+            "_Займёт ~60 секунд. Подожди._"
+        ),
+    },
+    "wf_failed": {
+        "en": "❌ Walk-forward failed: `{err}`",
+        "ru": "❌ Ошибка walk-forward: `{err}`",
+    },
+    "paper_dashboard_empty": {
+        "en": (
+            "📊 *Paper Trading Dashboard*\n\n"
+            "_No paper trades yet._\n\n"
+            "Run `python -m scripts.paper_log` (or set up cron) to start logging."
+        ),
+        "ru": (
+            "📊 *Дашборд Paper-Trading*\n\n"
+            "_Пока нет paper-сделок._\n\n"
+            "Запусти `python -m scripts.paper_log` (или настрой cron) для логирования."
         ),
     },
     "research_running": {

@@ -1004,7 +1004,29 @@ async def patterns_cmd(update: Update,
 # ── Research ──────────────────────────────────────────────────────────────────
 
 async def menu_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main menu → Research: show asset picker."""
+    """Main menu → Research: show research-type picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    rows = [
+        [InlineKeyboardButton(t("btn_research_grid", lang),
+                              callback_data="res_grid")],
+        [InlineKeyboardButton(t("btn_research_walkforward", lang),
+                              callback_data="res_wf")],
+        [InlineKeyboardButton(t("btn_research_paper", lang),
+                              callback_data="res_paper")],
+        [InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                              callback_data="menu_back")],
+    ]
+    await query.edit_message_text(
+        t("research_pick_type", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def menu_research_grid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Research → Grid Search: show asset picker."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
@@ -1013,8 +1035,29 @@ async def menu_research(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for label, sym in ASSETS
     ]
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                       callback_data="menu_research")])
     await query.edit_message_text(
         t("research_pick_asset", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def menu_research_wf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Research → Walk-Forward: show asset picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    buttons = [
+        InlineKeyboardButton(label, callback_data=f"wf_asset_{sym}")
+        for label, sym in ASSETS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                       callback_data="menu_research")])
+    await query.edit_message_text(
+        t("wf_pick_asset", lang),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows),
     )
@@ -1129,6 +1172,236 @@ async def research_asset_chosen(update: Update,
             t("btn_bt_again", lang), callback_data="menu_research")],
         [InlineKeyboardButton(
             t("btn_change_asset", lang), callback_data="menu_research")],
+    ])
+    await query.edit_message_text(
+        msg, parse_mode="Markdown", reply_markup=keyboard,
+    )
+
+
+# ── Walk-forward ──────────────────────────────────────────────────────────────
+
+def _format_wf_msg(symbol: str, lang: str, results: list[dict]) -> str:
+    """Format walk-forward grid results as a Telegram message."""
+    if not results:
+        return f"🔬 *Walk-Forward — {symbol}*\n\n_No results._"
+
+    header = f"🔬 *Walk-Forward — {symbol}*\n\n"
+    title_is = "📚 *In-sample (1st half):*" if lang == "en" else "📚 *In-sample (1-я половина):*"
+    title_oos = "🧪 *Out-of-sample (2nd half):*" if lang == "en" else "🧪 *Out-of-sample (2-я половина):*"
+
+    lines = [header, title_is + "\n"]
+    for r in results:
+        s = r["in_sample"]
+        lines.append(
+            f"  TP {_fmt_pct(r['tp_pct'])}% / SL {_fmt_pct(r['sl_pct'])}% — "
+            f"{s['total_signals']} sigs, WR {s['win_rate_pct']:.1f}%, "
+            f"net {s['total_pnl_after_tax_pct']:+.2f}%"
+        )
+    lines.append("")
+    lines.append(title_oos + "\n")
+    for r in results:
+        s = r["oos"]
+        v = r["verdict"]
+        icon = {"stable": "✓", "partial": "⚠", "hurts": "✗", "neutral": "·"}[v]
+        lines.append(
+            f"  {icon} TP {_fmt_pct(r['tp_pct'])}% / SL {_fmt_pct(r['sl_pct'])}% — "
+            f"{s['total_signals']} sigs, WR {s['win_rate_pct']:.1f}%, "
+            f"net {s['total_pnl_after_tax_pct']:+.2f}%"
+        )
+
+    # Best survivor
+    survivors = [r for r in results if r["verdict"] in ("stable", "partial")
+                 and r["oos"]["total_pnl_after_tax_pct"] > 0]
+    if survivors:
+        best = max(survivors,
+                   key=lambda r: r["oos"]["total_pnl_after_tax_pct"])
+        label = "💡 *Best survivor (OOS):*" if lang == "en" else "💡 *Лучший выживший (OOS):*"
+        lines.append("")
+        lines.append(label)
+        lines.append(
+            f"  TP {_fmt_pct(best['tp_pct'])}% / SL {_fmt_pct(best['sl_pct'])}% → "
+            f"{best['oos']['total_pnl_after_tax_pct']:+.2f}% net (after-tax)"
+        )
+
+    legend = ("\n_✓ stable · ⚠ partial overfit · ✗ hurts in OOS · · neutral_"
+              if lang == "en" else
+              "\n_✓ стабильно · ⚠ частично переподогнано · ✗ вредит OOS · · нейтрально_")
+    lines.append(legend)
+    return "\n".join(lines)
+
+
+def _run_walkforward(symbol: str) -> list[dict]:
+    """Walk-forward across a few TP/SL combos. Sync, runs in executor."""
+    from src.backtest.engine import (
+        _fetch_candles_full, _calc_stats, _run_window_loop, WARMUP_CANDLES,
+    )
+    combos = [(2.0, 1.0), (2.5, 1.25), (3.0, 1.5), (4.0, 2.0)]
+    candles = _fetch_candles_full(symbol, 720)
+    candles_4h = _fetch_candles_full(symbol, 720, "4h")
+
+    n = len(candles)
+    half = (n - WARMUP_CANDLES) // 2
+    first  = candles[:WARMUP_CANDLES + half]
+    second = candles[WARMUP_CANDLES + half - WARMUP_CANDLES:]
+
+    out = []
+    for tp, sl in combos:
+        t1, _ = _run_window_loop(symbol, first, tp, sl, candles_4h=candles_4h)
+        s1 = _calc_stats(t1, len(first) - WARMUP_CANDLES, tp, sl)
+        t2, _ = _run_window_loop(symbol, second, tp, sl, candles_4h=candles_4h)
+        s2 = _calc_stats(t2, len(second) - WARMUP_CANDLES, tp, sl)
+
+        in_net = s1["total_pnl_after_tax_pct"]
+        oos_net = s2["total_pnl_after_tax_pct"]
+        if in_net <= 0 and oos_net <= 0:
+            verdict = "hurts"
+        elif oos_net <= 0 and in_net > 0:
+            verdict = "hurts"
+        elif oos_net > 0 and in_net > 0:
+            verdict = "stable" if abs(oos_net - in_net) / max(in_net, 0.01) < 0.6 else "partial"
+        else:
+            verdict = "neutral"
+
+        out.append({
+            "tp_pct": tp, "sl_pct": sl,
+            "in_sample": s1, "oos": s2, "verdict": verdict,
+        })
+    return out
+
+
+async def wf_asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Walk-forward: asset chosen → run validation."""
+    query = update.callback_query
+    await query.answer()
+    lang   = _lang(context)
+    symbol = query.data[len("wf_asset_"):]
+
+    await query.edit_message_text(
+        t("wf_running", lang, symbol=symbol),
+        parse_mode="Markdown",
+    )
+
+    try:
+        loop    = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, lambda: _run_walkforward(symbol))
+    except Exception as err:
+        logger.exception("Walk-forward failed")
+        await query.edit_message_text(
+            t("wf_failed", lang, err=str(err)[:120]),
+            parse_mode="Markdown",
+        )
+        return
+
+    msg = _format_wf_msg(symbol, lang, results)
+    if len(msg) > 4090:
+        msg = msg[:4087] + "…"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_bt_again", lang),
+                              callback_data="res_wf")],
+        [InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                              callback_data="menu_research")],
+    ])
+    await query.edit_message_text(
+        msg, parse_mode="Markdown", reply_markup=keyboard,
+    )
+
+
+# ── Paper dashboard ───────────────────────────────────────────────────────────
+
+async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Research → Paper dashboard: show open + recent paper trades."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    from src.data.db import get_paper_trades, init_db
+    init_db()
+    all_trades = get_paper_trades(limit=10_000)
+
+    if not all_trades:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                 callback_data="menu_research")
+        ]])
+        await query.edit_message_text(
+            t("paper_dashboard_empty", lang),
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+        return
+
+    open_trades = [t for t in all_trades if t["status"] == "OPEN"]
+    closed = [t for t in all_trades if t["status"] != "OPEN"]
+
+    header = "📊 *Paper Trading Dashboard*\n\n" if lang == "en" else "📊 *Дашборд Paper-Trading*\n\n"
+    lines = [header]
+
+    # Per-symbol summary of closed
+    by_symbol: dict[str, list] = {}
+    for tr in closed:
+        by_symbol.setdefault(tr["symbol"], []).append(tr)
+
+    section_title = ("📈 *Per-symbol (closed):*" if lang == "en"
+                     else "📈 *По активам (закрытые):*")
+    lines.append(section_title)
+    if not by_symbol:
+        lines.append(("  _No closed trades yet._" if lang == "en"
+                      else "  _Закрытых сделок пока нет._"))
+    for sym in sorted(by_symbol.keys()):
+        trades = by_symbol[sym]
+        wins = sum(1 for t in trades if t["status"] == "TP_HIT")
+        losses = sum(1 for t in trades if t["status"] == "SL_HIT")
+        timeouts = sum(1 for t in trades if t["status"] == "TIMEOUT")
+        net = sum(t["pnl_pct_net_fees"] or 0 for t in trades)
+        wr = wins / len(trades) * 100 if trades else 0
+        lines.append(
+            f"  *{sym}*: {len(trades)} sigs · WR {wr:.1f}% · "
+            f"{wins}W/{losses}L/{timeouts}T · net {net:+.2f}%"
+        )
+    lines.append("")
+
+    # Open positions
+    open_title = ("🔓 *Open positions:*" if lang == "en"
+                  else "🔓 *Открытые позиции:*")
+    lines.append(open_title)
+    if not open_trades:
+        lines.append(("  _None._" if lang == "en" else "  _Нет._"))
+    else:
+        for tr in open_trades[:10]:
+            entry_dt = tr["entry_time"][:16].replace("T", " ")
+            lines.append(
+                f"  *{tr['symbol']}* @ ${tr['entry_price']:.2f} "
+                f"(TP ${tr['tp_price']:.2f} / SL ${tr['sl_price']:.2f}) "
+                f"_opened {entry_dt}_"
+            )
+    lines.append("")
+
+    # Recent closed (last 5)
+    recent_title = ("🕐 *Last 5 closed:*" if lang == "en"
+                    else "🕐 *Последние 5 закрытых:*")
+    lines.append(recent_title)
+    recent = sorted(closed, key=lambda t: t["exit_time"] or "", reverse=True)[:5]
+    if not recent:
+        lines.append(("  _None._" if lang == "en" else "  _Нет._"))
+    else:
+        for tr in recent:
+            icon = {"TP_HIT": "✅", "SL_HIT": "❌", "TIMEOUT": "⏰"}.get(tr["status"], "·")
+            pnl = tr["pnl_pct_net_fees"] or 0
+            lines.append(
+                f"  {icon} *{tr['symbol']}* {pnl:+.2f}% · {tr['hold_hours'] or 0}h · "
+                f"{tr['status']}"
+            )
+
+    msg = "\n".join(lines)
+    if len(msg) > 4090:
+        msg = msg[:4087] + "…"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_refresh", lang),
+                              callback_data="res_paper")],
+        [InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                              callback_data="menu_research")],
     ])
     await query.edit_message_text(
         msg, parse_mode="Markdown", reply_markup=keyboard,
@@ -1294,7 +1567,15 @@ def main():
     app.add_handler(CallbackQueryHandler(
         menu_research,  pattern="^menu_research$"))
     app.add_handler(CallbackQueryHandler(
+        menu_research_grid, pattern="^res_grid$"))
+    app.add_handler(CallbackQueryHandler(
+        menu_research_wf, pattern="^res_wf$"))
+    app.add_handler(CallbackQueryHandler(
+        menu_research_paper, pattern="^res_paper$"))
+    app.add_handler(CallbackQueryHandler(
         research_asset_chosen, pattern="^res_asset_"))
+    app.add_handler(CallbackQueryHandler(
+        wf_asset_chosen, pattern="^wf_asset_"))
     app.add_handler(CallbackQueryHandler(choose_asset,  pattern="^asset_"))
     app.add_handler(CallbackQueryHandler(analyse,       pattern="^analyse$"))
     app.add_handler(CallbackQueryHandler(

@@ -4,6 +4,35 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-27 — Research toolkit exposed in Telegram bot
+
+**Summary:** Reorganized Research menu in the bot from single-action to a sub-menu with three tools: Grid Search (existing), Walk-Forward (new), and Paper Dashboard (new). Brings most session-time analysis capabilities to the user's phone.
+
+### Changes
+
+- **`main.py`**:
+  - `menu_research()` now shows 3 sub-buttons instead of asset picker
+  - `menu_research_grid()` (new) — wraps existing asset-picker → standard grid run
+  - `menu_research_wf()` (new) — asset picker for walk-forward
+  - `wf_asset_chosen()` (new) — runs split-half validation across 4 TP/SL combos, emits per-combo verdict (stable/partial/hurts/neutral) + best survivor
+  - `_run_walkforward()` (new) — sync helper: fetches 1h+4h candles, splits 720d in halves, runs combos
+  - `_format_wf_msg()` (new) — Telegram-friendly markdown table
+  - `menu_research_paper()` (new) — instant dashboard: per-symbol WR/Net%, open positions, last 5 closed
+- **`src/bot/strings.py`**: 8 new bilingual strings (research_pick_type, btn_research_*, wf_*, paper_dashboard_empty)
+
+### Curated, NOT exposed
+
+Filter experiments (`gap_pct` hard-block, `score_threshold` raise) and `cooldown` are deliberately NOT in the UI. All three failed walk-forward validation earlier in the session — exposing them would invite users to deploy overfit configurations.
+
+### Walk-forward verdicts emitted
+
+- ✓ stable — both halves positive, magnitude similar
+- ⚠ partial — both positive but OOS magnitude differs significantly
+- ✗ hurts — OOS lost money or in-sample profit didn't survive
+- · neutral — neither half showed clear edge
+
+---
+
 ## 2026-04-27 — 4h timeframe wired into backtest (was live-only)
 
 **Summary:** Found that `is_uptrend`, `is_not_overbought`, `detect_candle_patterns` accept `candles_4h` for multi-timeframe confirmation, but the backtest engine was calling them WITHOUT 4h candles. Live mode was using 4h, backtest was not — so all prior backtest numbers underrepresented the bot's actual behavior. Wiring this up was the highest-leverage improvement of the session.
