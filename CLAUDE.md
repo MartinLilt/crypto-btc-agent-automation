@@ -32,10 +32,10 @@ Users interact via Telegram inline buttons. Supports EN/RU. Deployed via Docker.
 ## Supported Assets
 `BTCUSDT`, `SOLUSDT`, `ETHUSDT`
 
-Backtest evidence (720d, TP=3%/SL=1.5%, after fees + LT 15% tax):
-- BTC: +18.89%, WR=39%, profitable 3/4 quarters
-- ETH: +8.32%, WR=39%, profitable 3/4 quarters
-- SOL: +51.17%, WR=48%, profitable 4/4 quarters (strongest)
+Backtest evidence (720d, TP=3%/SL=1.5%, after fees + LT 15% tax, 4h-wired):
+- BTC: +21.08%, WR=37.8%, profitable both halves walk-forward
+- ETH: +28.86%, WR=40.2%, walk-forward OOS = +29.41%
+- SOL: +67.49%, WR=48.0%, walk-forward OOS = +47.34% (strongest)
 
 Score-based system uses universal thresholds; per-asset tuning not currently needed.
 

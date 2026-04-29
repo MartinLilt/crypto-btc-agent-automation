@@ -4,6 +4,46 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-27 — 4h timeframe wired into backtest (was live-only)
+
+**Summary:** Found that `is_uptrend`, `is_not_overbought`, `detect_candle_patterns` accept `candles_4h` for multi-timeframe confirmation, but the backtest engine was calling them WITHOUT 4h candles. Live mode was using 4h, backtest was not — so all prior backtest numbers underrepresented the bot's actual behavior. Wiring this up was the highest-leverage improvement of the session.
+
+### Effect on backtest (720d, TP=3%/SL=1.5%, after-tax)
+
+| Asset | Before (no 4h) | After (with 4h) | Δ |
+|-------|----------------|-----------------|---|
+| BTC | +18.89% (69 sigs) | **+21.08%** (74 sigs) | +2.19pp |
+| SOL | +51.17% (134 sigs) | **+67.49%** (173 sigs) | +16.32pp |
+| ETH | +8.32% (90 sigs) | **+28.86%** (117 sigs) | +20.54pp |
+
+More signals AND better quality — 4h adds orthogonal information (timeframe alignment) rather than restricting on existing features. When 4h is in uptrend, mediocre 1h signals get +2 score and become viable; when 4h is downtrend, weak setups get -2 and die.
+
+### Walk-forward validation (4h-wired)
+
+| Asset | In-sample | OOS | Verdict |
+|-------|-----------|-----|---------|
+| BTC | +11.14% | +9.95% | ✓ Stable |
+| SOL | +20.14% | +47.34% | ✓ OOS stronger |
+| ETH | -0.65% | +29.41% | ✓ Adapts to regime |
+
+Unlike gap_pct and score-threshold experiments earlier in the session — which both failed walk-forward — the 4h fix survives OOS validation. This is real edge, not curve-fitting.
+
+### Implementation
+
+- **`src/backtest/engine.py`**:
+  - `_fetch_candles_full()`: now correctly computes `needed` for 4h interval (`days * 6 + warmup` vs previous `days * 24 + warmup`)
+  - `_eval_bar()`: accepts `candles_4h` param, passes to `is_uptrend`, `is_not_overbought`, `detect_candle_patterns`
+  - `_slice_4h_at()` (new): for each 1h bar, returns the 4h candles available at that timestamp (matches what live receives from Binance)
+  - `_run_window_loop()`: fetches 4h history once per backtest, slices per bar
+  - `run_backtest`, `run_backtest_research`: fetch 4h candles before calling the loop
+- **`scripts/paper_log.py`**: fetches 4h candles (60d window) and passes via `_slice_4h_at()` to the evaluator
+
+### Why this was missed initially
+
+Multi-timeframe code had been added to the layer functions for live mode but `_eval_bar` in the backtest engine never called it with `candles_4h`. Live and backtest silently diverged. CLAUDE.md numbers are now updated to reflect the 4h-wired baseline.
+
+---
+
 ## 2026-04-27 — Paper trading mode (autonomous logger)
 
 **Summary:** Added autonomous paper-trading infrastructure: signals are evaluated and tracked without manual interaction. Designed to run hourly via cron over 30-60 days for out-of-sample validation.

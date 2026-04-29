@@ -145,7 +145,7 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
 
 # ── Signal evaluation ─────────────────────────────────────────────────────────
 
-def _check_for_signal(symbol: str, candles: list) -> dict | None:
+def _check_for_signal(symbol: str, candles: list, candles_4h: list | None = None) -> dict | None:
     """
     Run _eval_bar on the latest fully-closed candle.
     Returns trade payload to open, or None.
@@ -159,7 +159,10 @@ def _check_for_signal(symbol: str, candles: list) -> dict | None:
     window = candles[max(0, signal_idx - WARMUP_CANDLES):signal_idx + 1]
     ts_ms = candles[signal_idx]["open_time_ms"]
 
-    fired, snapshot = _eval_bar(window, ts_ms, TP_PCT, SL_PCT, 0.0, symbol)
+    from src.backtest.engine import _slice_4h_at
+    slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
+    fired, snapshot = _eval_bar(window, ts_ms, TP_PCT, SL_PCT, 0.0, symbol,
+                                candles_4h=slice_4h)
     if not fired:
         return None
 
@@ -192,9 +195,11 @@ def main() -> int:
 
     # Fetch candles once per asset (used for both open-trade tracking and new signals)
     candles_by_asset: dict[str, list] = {}
+    candles_4h_by_asset: dict[str, list] = {}
     for symbol in ASSETS:
         try:
             candles_by_asset[symbol] = _fetch_candles_full(symbol, days=14)
+            candles_4h_by_asset[symbol] = _fetch_candles_full(symbol, days=60, interval="4h")
         except Exception as e:
             logger.error("Fetch failed for %s: %s", symbol, e)
 
@@ -235,7 +240,7 @@ def main() -> int:
         if has_open_paper_trade(symbol):
             logger.info("%s: skipping (open trade exists)", symbol)
             continue
-        signal = _check_for_signal(symbol, candles)
+        signal = _check_for_signal(symbol, candles, candles_4h_by_asset.get(symbol))
         if not signal:
             continue
         trade_id = open_paper_trade(signal)
