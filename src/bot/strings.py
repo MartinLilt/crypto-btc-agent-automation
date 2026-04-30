@@ -362,13 +362,93 @@ STRINGS = {
         "en": (
             "📊 *Paper Trading Dashboard*\n\n"
             "_No paper trades yet._\n\n"
-            "Run `python -m scripts.paper_log` (or set up cron) to start logging."
+            "Click *Setup* below to configure and start paper trading."
         ),
         "ru": (
             "📊 *Дашборд Paper-Trading*\n\n"
             "_Пока нет paper-сделок._\n\n"
-            "Запусти `python -m scripts.paper_log` (или настрой cron) для логирования."
+            "Нажми *Setup* ниже чтобы настроить и запустить paper trading."
         ),
+    },
+    "btn_paper_setup": {
+        "en": "⚙️ Setup paper trading",
+        "ru": "⚙️ Настроить paper trading",
+    },
+    "btn_paper_stop": {
+        "en": "🛑 Stop paper trading",
+        "ru": "🛑 Остановить paper trading",
+    },
+    "ps_pick_assets": {
+        "en": (
+            "📊 *Setup Paper Trading — step 1/2*\n\n"
+            "Select which assets to research. Tap to toggle. Press *Done* when ready."
+        ),
+        "ru": (
+            "📊 *Настройка Paper-Trading — шаг 1/2*\n\n"
+            "Выбери активы для исследования. Тап = вкл/выкл. Нажми *Готово* когда выбрал."
+        ),
+    },
+    "ps_pick_period": {
+        "en": (
+            "📊 *Setup — step 2/2*\n\n"
+            "Research lookback period (deeper = more samples but slower regime adaptation)."
+        ),
+        "ru": (
+            "📊 *Настройка — шаг 2/2*\n\n"
+            "Период истории для исследования (длиннее = больше данных, но медленнее адаптация к режиму)."
+        ),
+    },
+    "ps_no_assets": {
+        "en": "⚠️ Please select at least one asset.",
+        "ru": "⚠️ Выбери хотя бы один актив.",
+    },
+    "ps_running": {
+        "en": (
+            "🔬 *Researching {n} asset(s) over {days}d...*\n\n"
+            "_Running 4 TP/SL combos × 3 periods. Ranking by win rate. ~60s._"
+        ),
+        "ru": (
+            "🔬 *Исследую {n} актив(ов) за {days} дней...*\n\n"
+            "_4 TP/SL комбо × 3 периода. Ранжирую по win rate. ~60с._"
+        ),
+    },
+    "ps_top3_header": {
+        "en": "🏆 *Top 3 strategies by Win Rate*\n\nPick one to start paper trading.\n",
+        "ru": "🏆 *Топ-3 стратегии по Win Rate*\n\nВыбери одну для запуска paper trading.\n",
+    },
+    "ps_no_strategies": {
+        "en": (
+            "❌ No strategies passed validation (need ≥10 signals).\n\n"
+            "Try a longer research period or different assets."
+        ),
+        "ru": (
+            "❌ Ни одна стратегия не прошла фильтр (нужно ≥10 сигналов).\n\n"
+            "Попробуй более длинный период или другие активы."
+        ),
+    },
+    "ps_started": {
+        "en": (
+            "✅ *Paper trading started*\n\n"
+            "Asset: `{symbol}`\n"
+            "TP: {tp}%  ·  SL: {sl}%\n"
+            "Backtest WR: {wr:.1f}%, Net: {net:+.2f}% over {days}d\n\n"
+            "_Bot will check signals every hour. Use *Paper Trades* to see status._"
+        ),
+        "ru": (
+            "✅ *Paper trading запущен*\n\n"
+            "Актив: `{symbol}`\n"
+            "TP: {tp}%  ·  SL: {sl}%\n"
+            "Backtest WR: {wr:.1f}%, Net: {net:+.2f}% за {days} дней\n\n"
+            "_Бот проверяет сигналы каждый час. Жми *Paper-сделки* для статуса._"
+        ),
+    },
+    "ps_stopped": {
+        "en": "🛑 Paper trading stopped. Open positions remain in DB until they hit TP/SL.",
+        "ru": "🛑 Paper trading остановлен. Открытые позиции остаются в БД до TP/SL.",
+    },
+    "btn_done": {
+        "en": "✅ Done",
+        "ru": "✅ Готово",
     },
     "research_running": {
         "en": (

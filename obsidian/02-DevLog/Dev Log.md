@@ -4,6 +4,49 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-30 — Paper trading wizard + auto-tick in Telegram bot
+
+**Summary:** Added a guided setup wizard to start paper trading from Telegram. User picks assets and research lookback; the bot runs the research grid, ranks the top 3 strategies by Win Rate, and (on selection) activates an in-bot JobQueue tick that calls `paper_log.run_once()` every hour. No external cron needed.
+
+### User flow
+
+1. `📊 Paper Trades` → `⚙️ Setup paper trading`
+2. **Step 1**: multi-select assets (BTC/SOL/ETH checkboxes, tap to toggle)
+3. **Step 2**: pick research lookback (90 / 180 / 365 days)
+4. Bot runs research grid (4 TP/SL × selected period × selected assets)
+5. Bot displays **top 3 by WR** (filtered to ≥10 signals minimum) with medals 🥇🥈🥉
+6. User taps a strategy → config saved to `bot_data["paper_config"]`, JobQueue scheduled
+7. Hourly tick: `paper_log.run_once(assets=[symbol], tp_pct, sl_pct)` runs in executor
+8. `🛑 Stop paper trading` button cancels the JobQueue and marks config inactive
+
+### Code changes
+
+- **`scripts/paper_log.py`**: Refactored — added `run_once(assets, tp_pct, sl_pct)` API. CLI `main()` now wraps it. The bot can now drive paper-logging directly without spawning subprocesses.
+- **`main.py`**:
+  - 7 new wizard handlers (`ps_setup`, `ps_toggle`, `ps_assets_done`, `ps_period_chosen`, `ps_strategy_chosen`, `ps_stop`, `_paper_log_tick`)
+  - `_paper_config()` helper to read active state from `bot_data`
+  - `_schedule_paper_job()` / `_cancel_paper_job()` JobQueue lifecycle
+  - `_research_for_assets()` driver — calls existing `_run_window_loop` per asset
+  - Auto-resume on startup: if `paper_config.active` was True before restart, JobQueue is re-scheduled in `post_init`
+  - Updated `menu_research_paper` dashboard to show active config + Setup/Stop button
+- **`src/bot/strings.py`**: 12 new bilingual strings
+- **`requirements.txt`**: pinned `python-telegram-bot[job-queue]==21.9` (apscheduler dep)
+
+### Architecture notes
+
+- Single-user model: `paper_config` lives in shared `bot_data`. If multi-user is needed later, switch to per-user_id key.
+- Top-3 ranking by WR with `n_signals ≥ 10` filter (avoids selecting strategies on tiny samples).
+- JobQueue runs in the bot's asyncio loop; `paper_log.run_once` is wrapped in `run_in_executor` because it's sync (HTTP requests, SQLite). Bot stays responsive.
+- `PicklePersistence` already serialises `bot_data` along with `user_data`, so `paper_config` persists across restarts automatically.
+
+### What's still NOT in the UI (deliberate)
+
+- Custom TP/SL input — research already explores 4 TP/SL combos
+- Filter experiments (gap_pct, score threshold, cooldown) — failed walk-forward earlier
+- Short-direction strategies — net negative on bull-regime data
+
+---
+
 ## 2026-04-29 — Short-direction infrastructure added (NOT exposed in UI)
 
 **Summary:** Built parallel signal evaluator and trade simulator for SHORT entries (mirror of long path). Tested on 720d × BTC/SOL/ETH with walk-forward validation. Result: shorts are net-negative on every asset across the available data window. Code committed for future use; deliberately NOT wired into Telegram UI or paper-trading.
