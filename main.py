@@ -1310,6 +1310,14 @@ async def wf_asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Paper dashboard ───────────────────────────────────────────────────────────
 
+def _paper_config(context) -> dict | None:
+    """Read active paper-trading config from bot_data (None if not active)."""
+    cfg = context.application.bot_data.get("paper_config")
+    if cfg and cfg.get("active"):
+        return cfg
+    return None
+
+
 async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Research → Paper dashboard: show open + recent paper trades."""
     query = update.callback_query
@@ -1319,16 +1327,32 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
     from src.data.db import get_paper_trades, init_db
     init_db()
     all_trades = get_paper_trades(limit=10_000)
+    active_cfg = _paper_config(context)
+
+    # Build top action row based on active state
+    if active_cfg:
+        action_row = [InlineKeyboardButton(
+            t("btn_paper_stop", lang), callback_data="ps_stop")]
+    else:
+        action_row = [InlineKeyboardButton(
+            t("btn_paper_setup", lang), callback_data="ps_setup")]
 
     if not all_trades:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
-                                 callback_data="menu_research")
-        ]])
+        keyboard = InlineKeyboardMarkup([
+            action_row,
+            [InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                  callback_data="menu_research")],
+        ])
+        empty_msg = t("paper_dashboard_empty", lang)
+        if active_cfg:
+            cfg_line = (
+                f"\n\n🟢 *Active*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+                if lang == "en" else
+                f"\n\n🟢 *Активно*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+            )
+            empty_msg = empty_msg + cfg_line
         await query.edit_message_text(
-            t("paper_dashboard_empty", lang),
-            parse_mode="Markdown",
-            reply_markup=keyboard,
+            empty_msg, parse_mode="Markdown", reply_markup=keyboard,
         )
         return
 
@@ -1398,7 +1422,16 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
     if len(msg) > 4090:
         msg = msg[:4087] + "…"
 
+    if active_cfg:
+        cfg_line = (
+            f"\n🟢 *Active*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+            if lang == "en" else
+            f"\n🟢 *Активно*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+        )
+        lines.insert(1, cfg_line)
+
     keyboard = InlineKeyboardMarkup([
+        action_row,
         [InlineKeyboardButton(t("btn_refresh", lang),
                               callback_data="res_paper")],
         [InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
@@ -1407,6 +1440,284 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text(
         msg, parse_mode="Markdown", reply_markup=keyboard,
     )
+
+
+# ── Paper Trading Setup Wizard ────────────────────────────────────────────────
+
+PAPER_PERIODS = [90, 180, 365]
+PAPER_JOB_NAME = "paper_log_tick"
+
+
+def _ps_assets(context) -> list[str]:
+    return context.user_data.setdefault("ps_assets", [])
+
+
+def _build_asset_kb(selected: list[str], lang: str):
+    """Multi-select asset checkboxes for the wizard."""
+    rows = []
+    for label, sym in ASSETS:
+        marker = "✅ " if sym in selected else "◻️ "
+        rows.append([InlineKeyboardButton(marker + label,
+                                          callback_data=f"ps_toggle_{sym}")])
+    rows.append([InlineKeyboardButton(t("btn_done", lang),
+                                       callback_data="ps_assets_done")])
+    rows.append([InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                       callback_data="res_paper")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def ps_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry: start the wizard. Reset selection state."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    context.user_data["ps_assets"] = []
+    await query.edit_message_text(
+        t("ps_pick_assets", lang),
+        parse_mode="Markdown",
+        reply_markup=_build_asset_kb([], lang),
+    )
+
+
+async def ps_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle an asset in the wizard selection."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    sym = query.data[len("ps_toggle_"):]
+    selected = _ps_assets(context)
+    if sym in selected:
+        selected.remove(sym)
+    else:
+        selected.append(sym)
+    context.user_data["ps_assets"] = selected
+    await query.edit_message_text(
+        t("ps_pick_assets", lang),
+        parse_mode="Markdown",
+        reply_markup=_build_asset_kb(selected, lang),
+    )
+
+
+async def ps_assets_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 1 done — show period picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    selected = _ps_assets(context)
+    if not selected:
+        await query.answer(t("ps_no_assets", lang), show_alert=True)
+        return
+    rows = [[
+        InlineKeyboardButton(f"{d}d", callback_data=f"ps_period_{d}")
+        for d in PAPER_PERIODS
+    ]]
+    rows.append([InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                       callback_data="ps_setup")])
+    await query.edit_message_text(
+        t("ps_pick_period", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+def _research_for_assets(assets: list[str], days: int) -> list[dict]:
+    """Run research grid for chosen assets. Returns flat list of (symbol+combo) results."""
+    from src.backtest.engine import (
+        _fetch_candles_full, _calc_stats, _run_window_loop, WARMUP_CANDLES,
+        RESEARCH_TP_SL,
+    )
+    needed = days * 24 + WARMUP_CANDLES
+    out = []
+    for sym in assets:
+        candles = _fetch_candles_full(sym, days)
+        candles_4h = _fetch_candles_full(sym, days, "4h")
+        sub = candles[-needed:] if len(candles) >= needed else candles
+        for tp, sl in RESEARCH_TP_SL:
+            trades, total = _run_window_loop(sym, sub, tp, sl, candles_4h=candles_4h)
+            stats = _calc_stats(trades, total, tp, sl)
+            out.append({
+                "symbol": sym, "days": days, "tp_pct": tp, "sl_pct": sl,
+                "n_signals": stats["total_signals"],
+                "wr_pct": stats["win_rate_pct"],
+                "net_pct": stats["total_pnl_net_fees_pct"],
+                "after_tax_pct": stats["total_pnl_after_tax_pct"],
+                "sharpe": stats["sharpe_ratio"],
+            })
+    return out
+
+
+async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User picked period — run research and rank top 3 by WR."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    days = int(query.data[len("ps_period_"):])
+    assets = _ps_assets(context)
+
+    await query.edit_message_text(
+        t("ps_running", lang, n=len(assets), days=days),
+        parse_mode="Markdown",
+    )
+
+    try:
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None, lambda: _research_for_assets(assets, days))
+    except Exception as err:
+        logger.exception("Paper-setup research failed")
+        await query.edit_message_text(
+            t("research_failed", lang, err=str(err)[:120]),
+            parse_mode="Markdown",
+        )
+        return
+
+    # Filter to combos with ≥10 signals; rank by WR desc, tiebreak by net%
+    valid = [r for r in results if r["n_signals"] >= 10]
+    valid.sort(key=lambda r: (r["wr_pct"], r["net_pct"]), reverse=True)
+    top3 = valid[:3]
+
+    if not top3:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                 callback_data="ps_setup")
+        ]])
+        await query.edit_message_text(
+            t("ps_no_strategies", lang),
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+        return
+
+    # Stash candidates so the picker callback can resolve by index
+    context.user_data["ps_candidates"] = top3
+
+    lines = [t("ps_top3_header", lang)]
+    medals = ["🥇", "🥈", "🥉"]
+    rows = []
+    for i, r in enumerate(top3):
+        lines.append(
+            f"{medals[i]} *{r['symbol']}* TP {_fmt_pct(r['tp_pct'])}% / SL {_fmt_pct(r['sl_pct'])}%\n"
+            f"   WR {r['wr_pct']:.1f}%  ·  Net {r['net_pct']:+.2f}%  "
+            f"·  Sharpe {r['sharpe']:.1f}  ·  {r['n_signals']} signals"
+        )
+        rows.append([InlineKeyboardButton(
+            f"{medals[i]} {r['symbol']} TP{_fmt_pct(r['tp_pct'])}/SL{_fmt_pct(r['sl_pct'])}",
+            callback_data=f"ps_pick_{i}")])
+
+    rows.append([InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
+                                       callback_data="ps_setup")])
+    await query.edit_message_text(
+        "\n\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def ps_strategy_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User picked one of the top-3 strategies — activate paper trading."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    idx = int(query.data[len("ps_pick_"):])
+    candidates = context.user_data.get("ps_candidates", [])
+    if idx >= len(candidates):
+        await query.answer("Stale selection — start over.", show_alert=True)
+        return
+    chosen = candidates[idx]
+
+    cfg = {
+        "active": True,
+        "symbol": chosen["symbol"],
+        "tp_pct": chosen["tp_pct"],
+        "sl_pct": chosen["sl_pct"],
+        "days":   chosen["days"],
+        "expected_wr": chosen["wr_pct"],
+        "expected_net": chosen["net_pct"],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_by": query.from_user.id if query.from_user else None,
+    }
+    context.application.bot_data["paper_config"] = cfg
+
+    # Schedule the JobQueue tick (idempotent)
+    _schedule_paper_job(context.application)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_research_paper", lang),
+                              callback_data="res_paper")],
+    ])
+    await query.edit_message_text(
+        t("ps_started", lang, symbol=chosen["symbol"],
+          tp=_fmt_pct(chosen["tp_pct"]), sl=_fmt_pct(chosen["sl_pct"]),
+          wr=chosen["wr_pct"], net=chosen["net_pct"], days=chosen["days"]),
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+
+
+async def ps_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Stop paper trading (deactivate config + cancel JobQueue)."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    cfg = context.application.bot_data.get("paper_config")
+    if cfg:
+        cfg["active"] = False
+    _cancel_paper_job(context.application)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(t("btn_research_paper", lang),
+                             callback_data="res_paper")
+    ]])
+    await query.edit_message_text(
+        t("ps_stopped", lang),
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+
+
+# ── Paper Trading background job ──────────────────────────────────────────────
+
+def _schedule_paper_job(app):
+    """Register hourly paper_log tick. Idempotent (replaces existing)."""
+    if app.job_queue is None:
+        logger.warning("JobQueue not available — paper trading auto-tick disabled")
+        return
+    # Cancel any existing
+    for job in app.job_queue.get_jobs_by_name(PAPER_JOB_NAME):
+        job.schedule_removal()
+    # Run every hour, first run in 5 seconds for immediate feedback
+    app.job_queue.run_repeating(
+        _paper_log_tick, interval=3600, first=5, name=PAPER_JOB_NAME,
+    )
+    logger.info("Paper-trading tick scheduled (every 3600s)")
+
+
+def _cancel_paper_job(app):
+    if app.job_queue is None:
+        return
+    for job in app.job_queue.get_jobs_by_name(PAPER_JOB_NAME):
+        job.schedule_removal()
+    logger.info("Paper-trading tick cancelled")
+
+
+async def _paper_log_tick(context):
+    """Hourly tick: read config, call paper_log.run_once with those params."""
+    cfg = context.application.bot_data.get("paper_config")
+    if not cfg or not cfg.get("active"):
+        return
+    try:
+        from scripts.paper_log import run_once
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: run_once(
+                assets=[cfg["symbol"]],
+                tp_pct=cfg["tp_pct"],
+                sl_pct=cfg["sl_pct"],
+            ),
+        )
+        logger.info("Paper tick: %s", result)
+    except Exception:
+        logger.exception("Paper tick failed")
 
 
 # ── /mode command ─────────────────────────────────────────────────────────────
@@ -1551,6 +1862,13 @@ async def post_init(app):
     asyncio.create_task(watcher_loop(app))
     logger.info("Monitor loops started")
 
+    # Resume paper-trading job if it was active before restart
+    cfg = app.bot_data.get("paper_config")
+    if cfg and cfg.get("active"):
+        _schedule_paper_job(app)
+        logger.info("Resumed paper-trading job for %s TP=%s SL=%s",
+                    cfg.get("symbol"), cfg.get("tp_pct"), cfg.get("sl_pct"))
+
 
 def main():
     # Persist user_data (language, picked asset) across bot restarts.
@@ -1580,6 +1898,13 @@ def main():
         menu_research_wf, pattern="^res_wf$"))
     app.add_handler(CallbackQueryHandler(
         menu_research_paper, pattern="^res_paper$"))
+    # Paper-trading wizard
+    app.add_handler(CallbackQueryHandler(ps_setup, pattern="^ps_setup$"))
+    app.add_handler(CallbackQueryHandler(ps_toggle, pattern="^ps_toggle_"))
+    app.add_handler(CallbackQueryHandler(ps_assets_done, pattern="^ps_assets_done$"))
+    app.add_handler(CallbackQueryHandler(ps_period_chosen, pattern="^ps_period_"))
+    app.add_handler(CallbackQueryHandler(ps_strategy_chosen, pattern="^ps_pick_"))
+    app.add_handler(CallbackQueryHandler(ps_stop, pattern="^ps_stop$"))
     app.add_handler(CallbackQueryHandler(
         research_asset_chosen, pattern="^res_asset_"))
     app.add_handler(CallbackQueryHandler(

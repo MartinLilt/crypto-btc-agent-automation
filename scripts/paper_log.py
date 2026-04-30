@@ -146,7 +146,9 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
 
 # ── Signal evaluation ─────────────────────────────────────────────────────────
 
-def _check_for_signal(symbol: str, candles: list, candles_4h: list | None = None) -> dict | None:
+def _check_for_signal(symbol: str, candles: list,
+                       tp_pct: float, sl_pct: float,
+                       candles_4h: list | None = None) -> dict | None:
     """
     Run _eval_bar on the latest fully-closed candle.
     Returns trade payload to open, or None.
@@ -162,7 +164,7 @@ def _check_for_signal(symbol: str, candles: list, candles_4h: list | None = None
 
     from src.backtest.engine import _slice_4h_at
     slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
-    fired, snapshot = _eval_bar(window, ts_ms, TP_PCT, SL_PCT, 0.0, symbol,
+    fired, snapshot = _eval_bar(window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
                                 candles_4h=slice_4h)
     if not fired:
         return None
@@ -176,10 +178,10 @@ def _check_for_signal(symbol: str, candles: list, candles_4h: list | None = None
         "symbol":         symbol,
         "entry_time":     entry_time,
         "entry_price":    entry_price,
-        "tp_pct":         TP_PCT,
-        "sl_pct":         SL_PCT,
-        "tp_price":       round(entry_price * (1 + TP_PCT / 100), 4),
-        "sl_price":       round(entry_price * (1 - SL_PCT / 100), 4),
+        "tp_pct":         tp_pct,
+        "sl_pct":         sl_pct,
+        "tp_price":       round(entry_price * (1 + tp_pct / 100), 4),
+        "sl_price":       round(entry_price * (1 - sl_pct / 100), 4),
         "total_score":    snapshot.get("total_score"),
         "layer_snapshot": json.dumps({
             k: v for k, v in snapshot.items()
@@ -191,13 +193,26 @@ def _check_for_signal(symbol: str, candles: list, candles_4h: list | None = None
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-def main() -> int:
+def run_once(assets: list[str] | None = None,
+             tp_pct: float | None = None,
+             sl_pct: float | None = None) -> dict:
+    """
+    One iteration of paper-trading: update open trades, evaluate new signals,
+    open trades on hits. Returns summary dict.
+
+    Importable from the bot: just pass desired assets and TP/SL.
+    Falls back to module-level defaults (env-driven) when args are None.
+    """
+    use_assets = assets if assets else ASSETS
+    use_tp = tp_pct if tp_pct is not None else TP_PCT
+    use_sl = sl_pct if sl_pct is not None else SL_PCT
+
     init_db()
 
-    # Fetch candles once per asset (used for both open-trade tracking and new signals)
+    # Fetch candles once per asset
     candles_by_asset: dict[str, list] = {}
     candles_4h_by_asset: dict[str, list] = {}
-    for symbol in ASSETS:
+    for symbol in use_assets:
         try:
             candles_by_asset[symbol] = _fetch_candles_full(symbol, days=14)
             candles_4h_by_asset[symbol] = _fetch_candles_full(symbol, days=60, interval="4h")
@@ -207,12 +222,17 @@ def main() -> int:
     closed_count = 0
     opened_count = 0
 
-    # 1. Update open trades
+    # 1. Update open trades — across ALL symbols (not just current config)
     for trade in get_open_paper_trades():
         symbol = trade["symbol"]
         candles = candles_by_asset.get(symbol)
         if not candles:
-            continue
+            try:
+                candles = _fetch_candles_full(symbol, days=14)
+                candles_by_asset[symbol] = candles
+            except Exception as e:
+                logger.error("Fetch for open-trade tracking failed (%s): %s", symbol, e)
+                continue
         outcome = _check_open_trade(trade, candles)
         if outcome:
             close_paper_trade(
@@ -236,12 +256,16 @@ def main() -> int:
             if sent:
                 mark_paper_notified(trade["id"], "close")
 
-    # 2. Look for new signals
-    for symbol, candles in candles_by_asset.items():
+    # 2. Look for new signals — only on the assets in this run's config
+    for symbol in use_assets:
+        candles = candles_by_asset.get(symbol)
+        if not candles:
+            continue
         if has_open_paper_trade(symbol):
             logger.info("%s: skipping (open trade exists)", symbol)
             continue
-        signal = _check_for_signal(symbol, candles, candles_4h_by_asset.get(symbol))
+        signal = _check_for_signal(symbol, candles, use_tp, use_sl,
+                                   candles_4h_by_asset.get(symbol))
         if not signal:
             continue
         trade_id = open_paper_trade(signal)
@@ -253,14 +277,20 @@ def main() -> int:
             f"📊 <b>Paper trade #{trade_id} opened</b>\n"
             f"Asset: <code>{symbol}</code>\n"
             f"Entry: ${signal['entry_price']:.2f}\n"
-            f"TP: ${signal['tp_price']:.2f} (+{TP_PCT}%)\n"
-            f"SL: ${signal['sl_price']:.2f} (-{SL_PCT}%)\n"
+            f"TP: ${signal['tp_price']:.2f} (+{use_tp}%)\n"
+            f"SL: ${signal['sl_price']:.2f} (-{use_sl}%)\n"
             f"Score: {signal['total_score']}/100"
         )
         if sent:
             mark_paper_notified(trade_id, "open")
 
     logger.info("Run complete: %d opened, %d closed", opened_count, closed_count)
+    return {"opened": opened_count, "closed": closed_count}
+
+
+def main() -> int:
+    """CLI entry point — uses module-level config from env vars."""
+    run_once()
     return 0
 
 
