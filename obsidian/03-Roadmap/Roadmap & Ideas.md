@@ -44,7 +44,8 @@
 
 ## Ideas / Backlog 💡
 
-- Persistent user state (survive bot restart) — currently in-memory
+- ~~Persistent user state~~ — done 2026-04-29 (PicklePersistence)
+- **Re-test SHORT strategy** when bear regime arrives — infrastructure exists in `_eval_bar_short()` etc., currently NOT exposed in UI because shorts are net −0% to −51% across BTC/ETH/SOL on 720d bull-regime data. See 2026-04-29 Dev Log entry.
 - Telegram alert on signal (push without user action)
 - Web dashboard for backtest results
 - Portfolio mode (scan all 5 assets simultaneously)

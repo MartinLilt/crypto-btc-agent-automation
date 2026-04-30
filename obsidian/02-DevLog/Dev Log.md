@@ -4,6 +4,50 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-04-29 — Short-direction infrastructure added (NOT exposed in UI)
+
+**Summary:** Built parallel signal evaluator and trade simulator for SHORT entries (mirror of long path). Tested on 720d × BTC/SOL/ETH with walk-forward validation. Result: shorts are net-negative on every asset across the available data window. Code committed for future use; deliberately NOT wired into Telegram UI or paper-trading.
+
+### Backtest results (720d, TP=3%/SL=1.5%)
+
+| Asset | LONG Net% | SHORT Net% | LONG Sigs | SHORT Sigs |
+|-------|----------:|-----------:|----------:|-----------:|
+| BTC | +21.08% | −0.08% | 74 | 180 |
+| SOL | +67.49% | **−36.08%** | 173 | 340 |
+| ETH | +28.86% | **−51.10%** | 117 | 282 |
+
+### Walk-forward (split halves)
+
+| Asset | SHORT IS | SHORT OOS | Verdict |
+|-------|---------:|----------:|---------|
+| BTC | −5.11% | +4.27% | Marginal — 79 OOS sigs is statistical noise |
+| SOL | −17.20% | −18.88% | Consistently losing |
+| ETH | −18.80% | −32.30% | Consistently losing, getting worse |
+
+### Why shorts fail on this dataset
+
+May 2024 — Apr 2026 was a **net bull regime** (especially SOL: +60% net long over 720d). Shorts in a bull market = consistently fighting the trend. There's no 2022 FTX-style crash in this window, so we can't calibrate shorts on actual bear data. **This is expected behavior, not a code bug.**
+
+### Code added (isolated, non-breaking)
+
+- **`src/signals/indicators.py`**: `is_downtrend()`, `is_not_oversold()`, `_score_l3_short()`, `check_sell_pressure()` — direction-flipped versions of L2/L3/L10
+- **`src/signals/support_resistance.py`**: `_detect_swing_lows()`, `_score_sr_short()`, `check_sr_proximity_short()` — L8 mirror checking supports below price instead of resistance above
+- **`src/backtest/engine.py`**: `_eval_bar_short()`, `_simulate_trade_short()` (PnL inverted: `(entry - exit) / entry`), `_run_window_loop_short()` — mirror backtest path
+
+L1 (volatility), L4 (volume), L5 (liquidity), L6 (R/R), L7 (news) are direction-symmetric and reuse long-path functions unchanged. L9 (candle patterns) inverts the score (`10 - long_score`) since the existing module already detects bearish patterns and assigns them low scores.
+
+### Why NOT exposed in UI
+
+Putting "Backtest SHORT" in the bot would invite users to deploy a strategy that loses money on the available data. We have no bear-regime data to validate on. When/if a bear regime arrives, re-run the comparison: if shorts cross break-even, then expose. Until then, it's −EV infrastructure.
+
+### When to revisit
+
+- **Real bear regime hits** — e.g., BTC drops 20%+ over 30 days
+- **Longer dataset becomes available** — 1500+ days covering 2022 crash
+- **User explicitly wants hedging** — long + short = market-neutral; net edge could come from selectivity rather than direction
+
+---
+
 ## 2026-04-29 — Fix: bot now remembers user language across restarts
 
 **Symptom:** Different analyses/tools ran in different languages because every bot restart wiped each user's `_lang` preference back to the "en" default. `context.user_data` was purely in-memory.

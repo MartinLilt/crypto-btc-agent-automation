@@ -34,8 +34,11 @@ from src.signals.indicators import (
     check_risk_reward,
     is_market_moving,
     is_not_overbought,
+    is_not_oversold,
     is_uptrend,
+    is_downtrend,
     is_volume_trending,
+    check_sell_pressure,
     GOOD_HOURS_UTC,
     SKIP_WEEKDAYS,
     ENTRY_SCORE_THRESHOLD,
@@ -43,7 +46,7 @@ from src.signals.indicators import (
     _score_l5,
     _score_l10,
 )
-from src.signals.support_resistance import check_sr_proximity
+from src.signals.support_resistance import check_sr_proximity, check_sr_proximity_short
 from src.signals.candle_patterns import detect_candle_patterns
 
 load_dotenv()
@@ -657,3 +660,212 @@ def run_backtest_research(
 
     results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
     return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SHORT DIRECTION — mirror of long backtest
+# ══════════════════════════════════════════════════════════════════════════════
+# Short trades: enter SELL at next bar's open, TP is BELOW (price drops),
+# SL is ABOVE (price rises against us). Symmetric layers (L1/L4/L5/L6/L7) reuse
+# long functions; L2/L3/L8/L9/L10 use direction-aware mirrors.
+
+def _eval_bar_short(candles_window: list, ts_ms: int,
+                    tp_pct: float, sl_pct: float,
+                    spread_approx: float, symbol: str,
+                    candles_4h: list | None = None) -> tuple[bool, dict]:
+    """Mirror of _eval_bar for short entries."""
+    # L1 — Volatility (same; trends in both directions need volatility)
+    l1_score, l1 = is_market_moving(candles_window)
+    if l1_score < 4:
+        adx = l1.get("adx", 0)
+        override = _score_l1(max(adx, 20.1) if adx >= 20 else adx,
+                             l1.get("atr_expanding", False),
+                             l1.get("volume_spike", False))
+        l1_score = max(l1_score, override)
+
+    # L2 — Downtrend
+    l2_score, l2 = is_downtrend(candles_window, candles_4h=candles_4h)
+    if l2_score < 4:
+        price_below = l2.get("price", 0) < l2.get("ema50", 0)
+        slope_down  = l2.get("ema50_slope_down", False)
+        if price_below or slope_down:
+            l2_score = max(l2_score, 4)
+
+    # L3 — Not oversold (avoid extreme RSI <30 — bounce risk)
+    l3_score, l3 = is_not_oversold(candles_window, candles_4h=candles_4h)
+
+    # L4 — Volume (same)
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    l4_score, l4 = is_volume_trending(candles_window)
+
+    # L5 — Liquidity (same)
+    last = candles_window[-1]
+    approx_spread = (last["high"] - last["low"]) * 0.1
+    volume_24h = sum(c["volume"] * c["close"] for c in candles_window[-24:])
+    spread_ok = max(approx_spread, 0.01) / last["close"] < 0.005
+    vol_ok = volume_24h >= 30_000_000
+    l5_score = _score_l5(approx_spread, spread_ok and vol_ok, volume_24h)
+    l5 = {"score": l5_score, "pass": l5_score >= 7,
+          "spread": round(approx_spread, 6), "spread_ok": spread_ok,
+          "volume_24h_usd": round(volume_24h, 2), "volume_ok": vol_ok,
+          "min_volume_usd": 30_000_000}
+
+    # L6 — Risk/Reward (same math)
+    l6_score, l6 = check_risk_reward(
+        budget=100.0, take_profit_pct=tp_pct, stop_loss_pct=sl_pct,
+        atr=l1.get("atr"), price=candles_window[-1]["close"],
+    )
+
+    # L7 — News (neutral in backtest)
+    l7_score = 5
+    l7 = {"score": l7_score, "pass": True, "skipped": True, "total": 0}
+
+    # L8 — Support proximity (TP path is DOWN)
+    l8_score, l8 = check_sr_proximity_short(candles_window, tp_pct=tp_pct)
+
+    # L9 — Candle pattern (INVERT: bearish patterns are good for shorts)
+    l9_long_score, l9 = detect_candle_patterns(candles_window, candles_4h=candles_4h)
+    l9_score = 10 - l9_long_score          # bullish 10 → 0, bearish 1 → 9
+    l9 = {**l9, "score": l9_score, "pass": l9_score >= 7,
+          "long_score": l9_long_score}
+
+    # L10 — Sell pressure
+    total_vol = sum(c["volume"] for c in candles_window[-6:]) or 1
+    buy_vol = sum(c["taker_buy_vol"] for c in candles_window[-6:])
+    buy_ratio = buy_vol / total_vol * 100
+    pressure_data = {
+        "ok": True,
+        "buy_ratio_pct": buy_ratio,
+        "net_btc": buy_vol - (total_vol - buy_vol),
+        "trend": ("bullish" if buy_ratio > 55 else
+                  "bearish" if buy_ratio < 45 else "neutral"),
+    }
+    l10_score, l10 = check_sell_pressure(pressure_data)
+
+    total_score = (l1_score + l2_score + l3_score + l4_score + l5_score +
+                   l6_score + l7_score + l8_score + l9_score + l10_score)
+
+    # Hard filters mirrored: RSI < 35 blocks (bounce risk), ADX 25-40 still
+    # treated as danger zone
+    rsi_block = l3.get("rsi", 50) < 35
+    adx_val = l1.get("adx", 0)
+    adx_block = 25 <= adx_val < 40
+
+    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not adx_block
+
+    snapshot = {
+        "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
+        "l6": l6, "l7": l7, "l8": l8, "l9": l9, "l10": l10,
+        "total_score": total_score,
+        "weekday": dt.strftime("%A"),
+        "hour_utc": dt.hour,
+        "entry_time": dt.isoformat(),
+        "direction": "SHORT",
+    }
+    return all_pass, snapshot
+
+
+def _simulate_trade_short(candles: list, entry_idx: int,
+                          tp_pct: float, sl_pct: float) -> dict:
+    """Short trade: PnL = (entry - exit) / entry. TP below entry, SL above."""
+    if entry_idx + 1 >= len(candles):
+        return {"result": "NO_DATA", "pnl_pct": 0.0, "hold_hours": 0,
+                "exit_price": 0.0, "exit_time": "", "max_drawdown_pct": 0.0}
+
+    entry_price = candles[entry_idx + 1]["open"]
+    tp_price = entry_price * (1 - tp_pct / 100)
+    sl_price = entry_price * (1 + sl_pct / 100)
+
+    max_drawdown = 0.0
+    result = "TIMEOUT"
+    exit_price = entry_price
+    exit_time = ""
+    hold_hours = 0
+
+    for j in range(1, MAX_HOLD_HOURS + 1):
+        idx = entry_idx + 1 + j
+        if idx >= len(candles):
+            break
+        c = candles[idx]
+        hold_hours = j
+
+        # Track max drawdown for shorts: how much price moved AGAINST us (up)
+        high_rise = (c["high"] - entry_price) / entry_price * 100
+        max_drawdown = max(max_drawdown, high_rise)
+
+        # Conservative: check SL first
+        if c["high"] >= sl_price:
+            result = "SL_HIT"
+            exit_price = sl_price
+            exit_time = datetime.fromtimestamp(c["open_time_ms"]/1000, tz=timezone.utc).isoformat()
+            break
+        if c["low"] <= tp_price:
+            result = "TP_HIT"
+            exit_price = tp_price
+            exit_time = datetime.fromtimestamp(c["open_time_ms"]/1000, tz=timezone.utc).isoformat()
+            break
+        exit_price = c["close"]
+        exit_time = datetime.fromtimestamp(c["open_time_ms"]/1000, tz=timezone.utc).isoformat()
+
+    pnl_pct = (entry_price - exit_price) / entry_price * 100   # SHORT inversion
+    fee_pct = BINANCE_FEE_PCT * 2
+    pnl_pct_net_fees = pnl_pct - fee_pct
+
+    return {
+        "result":           result,
+        "entry_price":      entry_price,
+        "exit_price":       exit_price,
+        "exit_time":        exit_time,
+        "pnl_pct":          round(pnl_pct, 4),
+        "pnl_pct_net_fees": round(pnl_pct_net_fees, 4),
+        "fee_pct":          round(fee_pct, 4),
+        "hold_hours":       hold_hours,
+        "max_drawdown_pct": round(max_drawdown, 4),
+    }
+
+
+def _run_window_loop_short(symbol: str, candles: list,
+                            tp_pct: float, sl_pct: float,
+                            candles_4h: list | None = None) -> tuple[list, int]:
+    """Mirror of _run_window_loop for shorts."""
+    total_candles = len(candles) - WARMUP_CANDLES
+    trades_raw = []
+    for i in range(WARMUP_CANDLES, len(candles) - 1):
+        window = candles[max(0, i - WARMUP_CANDLES):i + 1]
+        ts_ms  = candles[i]["open_time_ms"]
+        slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
+
+        signal, snapshot = _eval_bar_short(
+            window, ts_ms, tp_pct, sl_pct, 0.0, symbol, candles_4h=slice_4h)
+        if not signal:
+            continue
+
+        outcome = _simulate_trade_short(candles, i, tp_pct, sl_pct)
+        if outcome["result"] == "NO_DATA":
+            continue
+
+        trades_raw.append({
+            "symbol":    symbol,
+            "direction": "SHORT",
+            "entry_time": snapshot["entry_time"],
+            "entry_price": outcome["entry_price"],
+            "weekday":   snapshot["weekday"],
+            "hour_utc":  snapshot["hour_utc"],
+            "result":    outcome["result"],
+            "exit_price": outcome["exit_price"],
+            "exit_time":  outcome["exit_time"],
+            "pnl_pct":    outcome["pnl_pct"],
+            "pnl_pct_net_fees": outcome["pnl_pct_net_fees"],
+            "hold_hours":       outcome["hold_hours"],
+            "max_drawdown_pct": outcome["max_drawdown_pct"],
+            "total_score":      snapshot["total_score"],
+            "l1_atr":  snapshot["l1"].get("atr"),
+            "l1_adx":  snapshot["l1"].get("adx"),
+            "l2_ema50": snapshot["l2"].get("ema50"),
+            "l2_ema200": snapshot["l2"].get("ema200"),
+            "l2_gap_pct": snapshot["l2"].get("gap_pct"),
+            "l3_rsi": snapshot["l3"].get("rsi"),
+            "l3_macd_hist": snapshot["l3"].get("macd_hist"),
+            "l10_buy_ratio": snapshot["l10"].get("buy_ratio_pct"),
+        })
+    return trades_raw, total_candles

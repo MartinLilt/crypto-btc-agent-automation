@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Paper-trading logger — autonomous signal evaluation + position tracking.
