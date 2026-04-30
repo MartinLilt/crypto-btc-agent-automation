@@ -16,7 +16,11 @@ venv/
 logs/*.log
 data/*.db
 data/*.json
+data/*.pkl
 *.log
+
+# Claude Code local artifacts
+.claude/scheduled_tasks.lock
 
 # OS / editor
 .DS_Store

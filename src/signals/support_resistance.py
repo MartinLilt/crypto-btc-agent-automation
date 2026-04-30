@@ -111,3 +111,80 @@ def check_sr_proximity(
         "n_blockers":      len(blocking),
         "skipped":         False,
     }
+
+
+# ── SHORT direction: support proximity ────────────────────────────────────────
+
+def _detect_swing_lows(candles: list, window: int = 3) -> list[float]:
+    """Mirror of _detect_swing_highs — fractal swing lows (local minima)."""
+    lows = []
+    n = len(candles)
+    for i in range(window, n - window):
+        l = candles[i]["low"]
+        left_ok  = all(candles[j]["low"] > l for j in range(i - window, i))
+        right_ok = all(candles[j]["low"] > l for j in range(i + 1, i + window + 1))
+        if left_ok and right_ok:
+            lows.append(l)
+    return lows
+
+
+def _score_sr_short(blocking: list[float], price: float) -> int:
+    """For shorts: blocking = supports between current price and TP (below)."""
+    if not blocking:
+        return 10
+    if len(blocking) >= 3:
+        return 1
+    nearest = max(blocking)             # closest support BELOW price
+    gap_pct = (price - nearest) / price * 100
+    if len(blocking) == 1:
+        if gap_pct >= 1.5:
+            return 7
+        if gap_pct >= 1.0:
+            return 5
+        if gap_pct >= 0.5:
+            return 3
+        return 1
+    else:
+        if gap_pct >= 1.0:
+            return 4
+        return 2
+
+
+def check_sr_proximity_short(
+    candles: list,
+    tp_pct: float = 2.0,
+    window: int = 3,
+) -> tuple[int, dict]:
+    """
+    Mirror of check_sr_proximity for shorts.
+    TP is BELOW entry price; checks for support levels blocking the path down.
+    """
+    if len(candles) < window * 2 + 5:
+        return 7, {"score": 7, "pass": True, "blocking_levels": [],
+                   "nearest_support": None, "swing_lows": [], "skipped": True}
+
+    price    = candles[-1]["close"]
+    tp_price = price * (1 - tp_pct / 100)
+
+    raw_lows  = _detect_swing_lows(candles[:-1], window=window)
+    clustered = _cluster_levels(raw_lows)
+
+    # Supports between TP and current price (with 0.3% buffer)
+    blocking = [l for l in clustered if tp_price * 0.997 <= l < price]
+
+    below   = [l for l in clustered if l < price]
+    nearest = round(max(below), 2) if below else None
+
+    score = _score_sr_short(blocking, price)
+
+    return score, {
+        "score":           score,
+        "pass":            score >= 7,
+        "price":           price,
+        "tp_price":        round(tp_price, 2),
+        "swing_lows":      [round(l, 2) for l in clustered[-10:]],
+        "blocking_levels": [round(l, 2) for l in blocking],
+        "nearest_support": nearest,
+        "n_blockers":      len(blocking),
+        "skipped":         False,
+    }

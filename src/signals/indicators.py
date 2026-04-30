@@ -903,4 +903,212 @@ def check_entry_signal(
             "fear_greed": supp_fg,
         },
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SHORT-DIRECTION INDICATORS (mirror of long-direction)
+# ══════════════════════════════════════════════════════════════════════════════
+# Used by short backtest path. Same data, inverted interpretation:
+#   L2 — is_downtrend: price < EMA50 < EMA200, slope DOWN, death-cross
+#   L3 — is_not_oversold: RSI 35-60 (avoid extreme oversold), MACD hist < 0
+#   L10 — sell pressure: taker buy ratio < 50% (sellers in control)
+# Symmetric layers (L1 volatility, L4 volume, L5 liquidity, L6 R/R) reuse long
+# functions unchanged. L7 news, L8 S/R, L9 candle patterns get direction-aware
+# wrappers in the engine.
+
+def is_downtrend(candles: list, candles_4h: list | None = None) -> tuple[int, dict]:
+    """L2 — Mirror of is_uptrend for short entries."""
+    ema50_series  = calculate_ema(candles, EMA_FAST)
+    ema200_series = calculate_ema(candles, EMA_SLOW)
+    if not ema50_series or not ema200_series:
+        return 0, {"error": "not enough candles", "score": 0, "pass": False}
+
+    price  = candles[-1]["close"]
+    ema50  = ema50_series[-1]
+    ema200 = ema200_series[-1]
+
+    ema50_slope_down = len(ema50_series) > 5 and ema50_series[-1] < ema50_series[-6]
+
+    offset = EMA_SLOW - EMA_FAST
+    aligned50 = ema50_series[offset:]
+
+    # Recent death cross
+    recent_cross = False
+    for i in range(-GOLDEN_CROSS_LOOKBACK, 0):
+        try:
+            if aligned50[i - 1] >= ema200_series[i - 1] and aligned50[i] < ema200_series[i]:
+                recent_cross = True
+                break
+        except IndexError:
+            break
+
+    # Established downtrend
+    established = (
+        len(aligned50) >= 5 and len(ema200_series) >= 5
+        and all(aligned50[i] < ema200_series[i] for i in range(-5, 0))
+    )
+
+    # Mirror _score_l2 logic (inline because direction-flipped)
+    if price < ema50 < ema200:
+        score = 8 if established else 7
+    elif price < ema50 and ema50 < ema200:
+        score = 6
+    elif price < ema50:
+        score = 5
+    else:
+        score = 2
+    if ema50_slope_down:
+        score = min(10, score + 1)
+    if recent_cross:
+        score = min(10, score + 1)
+
+    # 4h alignment for shorts
+    tf4h_bonus = 0
+    tf4h_aligned = False
+    tf4h_ema50 = None
+    tf4h_ema200 = None
+    if candles_4h and len(candles_4h) >= EMA_SLOW:
+        e50_4h  = calculate_ema(candles_4h, EMA_FAST)
+        e200_4h = calculate_ema(candles_4h, EMA_SLOW)
+        if e50_4h and e200_4h:
+            tf4h_ema50  = e50_4h[-1]
+            tf4h_ema200 = e200_4h[-1]
+            price_4h = candles_4h[-1]["close"]
+            if price_4h < tf4h_ema50 < tf4h_ema200:
+                tf4h_bonus = 2
+                tf4h_aligned = True
+            elif price_4h > tf4h_ema50 or tf4h_ema50 > tf4h_ema200:
+                tf4h_bonus = -2
+            else:
+                tf4h_bonus = 1
+                tf4h_aligned = True
+
+    score = min(10, max(0, score + tf4h_bonus))
+
+    # 24h VWAP — for shorts price BELOW VWAP is bullish for entry
+    vwap_window = candles[-24:] if len(candles) >= 24 else candles
+    vwap_vol = sum(c["volume"] for c in vwap_window)
+    vwap = (sum((c["high"] + c["low"] + c["close"]) / 3 * c["volume"]
+                for c in vwap_window) / vwap_vol) if vwap_vol > 0 else price
+    vwap_below = price < vwap
+    vwap_bonus = 1 if vwap_below else -1
+    score = min(10, max(0, score + vwap_bonus))
+
+    return score, {
+        "score":               score,
+        "pass":                score >= 7,
+        "price":               price,
+        "ema50":               round(ema50, 2),
+        "ema200":              round(ema200, 2),
+        "gap_pct":             round((ema50 - ema200) / ema200 * 100, 3) if ema200 else 0.0,
+        "ema50_slope_down":    ema50_slope_down,
+        "death_cross":         recent_cross,
+        "established_downtrend": established,
+        "tf4h_bonus":          tf4h_bonus,
+        "tf4h_aligned":        tf4h_aligned,
+        "tf4h_ema50":          round(tf4h_ema50, 2) if tf4h_ema50 else None,
+        "tf4h_ema200":         round(tf4h_ema200, 2) if tf4h_ema200 else None,
+        "vwap":                round(vwap, 2),
+        "vwap_below":          vwap_below,
+        "vwap_bonus":          vwap_bonus,
+    }
+
+
+def _score_l3_short(rsi: float, macd_hist: float) -> int:
+    """L3 short — want RSI 35-60 (not extreme oversold), MACD hist < 0."""
+    if 40 <= rsi <= 60:
+        rsi_pts = 6
+    elif 35 <= rsi <= 65:
+        rsi_pts = 4
+    elif rsi < 30:    # extreme oversold — high reversal risk for shorts
+        rsi_pts = 0
+    else:
+        rsi_pts = 2
+    macd_pts = 4 if macd_hist < 0 else 0
+    return min(10, rsi_pts + macd_pts)
+
+
+def is_not_oversold(candles: list, candles_4h: list | None = None) -> tuple[int, dict]:
+    """L3 — Mirror of is_not_overbought for short entries."""
+    rsi = calculate_rsi(candles)
+    macd, macd_sig, macd_hist = calculate_macd(candles)
+
+    score = _score_l3_short(rsi, macd_hist)
+
+    tf4h_rsi = None
+    rsi4h_bonus = 0
+    if candles_4h and len(candles_4h) >= 15:
+        tf4h_rsi = calculate_rsi(candles_4h)
+        if 35 <= tf4h_rsi <= 60:
+            rsi4h_bonus = 2
+        elif tf4h_rsi < 30:
+            rsi4h_bonus = -2     # extreme oversold — bounce risk
+        elif tf4h_rsi > 65:
+            rsi4h_bonus = -1
+
+    score = min(10, max(0, score + rsi4h_bonus))
+
+    return score, {
+        "score": score, "pass": score >= 7,
+        "rsi": rsi, "rsi_ok": 30 < rsi < 65,
+        "macd": macd, "macd_signal": macd_sig, "macd_hist": macd_hist,
+        "macd_ok": macd_hist < 0,
+        "tf4h_rsi": round(tf4h_rsi, 2) if tf4h_rsi is not None else None,
+        "rsi4h_bonus": rsi4h_bonus,
+    }
+
+
+def check_sell_pressure(pressure_data: dict, funding_data: dict | None = None) -> tuple[int, dict]:
+    """L10 — Mirror of check_buy_pressure for short entries.
+    High score when sellers are in control (taker buy ratio low, net negative).
+    """
+    if not pressure_data.get("ok", False):
+        return 5, {"score": 5, "pass": False, "skipped": True,
+                   "buy_ratio_pct": 50.0, "net_btc": 0.0, "trend": "neutral"}
+
+    ratio = pressure_data["buy_ratio_pct"]   # taker BUY ratio
+    net = pressure_data["net_btc"]
+
+    # Inverted thresholds: low buy ratio = sellers winning
+    if ratio <= 40:
+        ratio_pts = 6
+    elif ratio <= 45:
+        ratio_pts = 5
+    elif ratio <= 50:
+        ratio_pts = 4
+    elif ratio <= 55:
+        ratio_pts = 2
+    else:
+        ratio_pts = 0
+    if net < -1000:
+        net_pts = 4
+    elif net < 0:
+        net_pts = 3
+    elif net < 500:
+        net_pts = 2
+    else:
+        net_pts = 0
+    score = min(10, ratio_pts + net_pts)
+
+    # Funding rate: for shorts, high positive funding (longs overheated) = +mod
+    fr_modifier = 0
+    funding_rate = None
+    if funding_data and funding_data.get("ok"):
+        funding_rate = funding_data.get("funding_rate", 0.0)
+        if   funding_rate >  0.05: fr_modifier = +3   # extreme longs → short squeeze setup
+        elif funding_rate >  0.03: fr_modifier = +2
+        elif funding_rate >  0.01: fr_modifier = +1
+        elif funding_rate > -0.01: fr_modifier = -1
+        elif funding_rate > -0.03: fr_modifier = -2
+        else:                       fr_modifier = -3
+
+    score = min(10, max(0, score + fr_modifier))
+
+    return score, {
+        "score": score, "pass": score >= 7,
+        "buy_ratio_pct": ratio, "net_btc": net,
+        "trend": pressure_data.get("trend", "neutral"),
+        "skipped": False,
+        "funding_rate": funding_rate, "fr_modifier": fr_modifier,
+    }
     return should_enter, report
