@@ -4,6 +4,57 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-05-05 — SHORT direction reaches feature parity with LONG
+
+**Summary:** Promoted the existing short-direction infrastructure from "engine-only, hidden" to a first-class option exposed across every analysis surface in the bot: live analysis, backtest, research grid, walk-forward, patterns, and paper trading (including dual-direction "BOTH" mode). User picks LONG or SHORT after the asset, with a one-line −EV disclaimer carrying the bull-regime warning.
+
+### Engine + DB
+- New public APIs: `run_backtest_short()` and `run_backtest_research_short()` mirror the long-direction entry points, persist `direction='SHORT'` in `backtest_runs` and each row of `backtest_trades`.
+- DB migration adds `direction TEXT NOT NULL DEFAULT 'LONG'` to `backtest_runs`, `backtest_trades`, `paper_trades`. Long-direction rows pre-existing in the DB stay as 'LONG' by default.
+- `get_trades(symbol, days, direction)` and `compute_patterns(symbol, days, direction)` filter by direction. Pattern cache key includes direction so long/short don't collide.
+- Long-side trade rows now also persist `direction='LONG'` explicitly (previously implicit).
+
+### Signals
+- **Bug fix**: `check_entry_signal` was missing its `return should_enter, report` — silently returned `None`, causing live analysis to crash on first call. The orphan `return` lived inside `check_sell_pressure` as unreachable dead code; moved it back to its rightful function.
+- New `check_entry_signal_short()` mirror — uses `is_downtrend`, `is_not_oversold`, `check_sr_proximity_short`, `check_sell_pressure`. Inverts L7 (bullish news = bad for short), L9 (10 − long_score: long detector scores bearish patterns low). Hard blocks inverted: RSI < 35 (oversold reversal risk), price > daily/weekly EMAs blocks short entry.
+
+### Paper trader (`scripts/paper_log.py`)
+- `_check_open_trade()` is direction-aware: SHORT inverts both TP/SL geometry (TP below entry, SL above) and PnL sign. Verified with 4-case smoke test.
+- `_check_for_signal(direction='LONG'|'SHORT')` selects `_eval_bar` vs `_eval_bar_short`.
+- `run_once(direction='LONG'|'SHORT'|'BOTH')` — BOTH scans both directions per asset; long and short positions can coexist for the same symbol (independent policy, per agreed design).
+- `has_open_paper_trade(symbol, direction)` — duplicate-guard now per-direction.
+- Telegram notifications include a 📈/📉 emoji + direction label so the user can tell which side just opened/closed.
+
+### Bot UI
+- Added a shared direction-picker step inserted after asset selection in every flow:
+  - Live (`asset_*` → `livedir_*` → analysis)
+  - Backtest (`bt_asset_*` → `btdir_*` → period → budget → TP/SL → run)
+  - Patterns (`bt_patterns_*` → `patdir_*` → compute)
+  - Research grid (`res_asset_*` → `rgdir_*` → grid)
+  - Walk-Forward (`wf_asset_*` → `wfdir_*` → wf)
+- Disclaimer appears under every direction picker: "on 720d bull-regime data SHORT is net-negative (BTC ≈0%, SOL −36%, ETH −51%)". User makes an informed pick.
+- `_run_walkforward(symbol, direction)` switches between `_run_window_loop` and `_run_window_loop_short`.
+
+### Paper-trading wizard
+- New step 2: Long / Short / **Both**. Step labels renumbered.
+- For BOTH: research runs twice (once per direction), top-3 ranked **independently per direction** by WR (≥10 signals min). User sees up to 6 medals split into "📈 LONG" / "📉 SHORT" sections.
+- Active config carries `direction` field; `_paper_log_tick` passes it through to `run_once`. Dashboard shows the direction next to the symbol.
+
+### Smoke tests
+- `run_backtest('BTCUSDT', 180d)` → 8 LONG signals, +1.37%
+- `run_backtest_short('BTCUSDT', 180d)` → 43 SHORT signals, +2.42%
+- `_check_open_trade` 4-case test: LONG TP/SL and SHORT TP/SL all return correct status + signed PnL.
+
+### Why direction-aware indices vs a flag
+We considered passing a `direction` flag through the existing `_eval_bar`. Rejected — short uses different scoring functions for L2/L3/L8/L9/L10 and inverts hard blocks, so a flag would have meant a function with two completely different code paths. Mirror functions keep each path readable in isolation.
+
+### What's NOT in scope
+- Real-trade Binance execution stays long-only for now (Phase 2 work).
+- L4 (volume) and L5 (liquidity) are direction-symmetric — no short-specific tuning.
+- Pattern-analyzer trade-row schema for SHORT is a subset (L4/L5/L6/L8/L9 fields are NULL); fine for current pattern dimensions but if those layers ever feed pattern bands we'll need to backfill.
+
+---
+
 ## 2026-04-30 — Paper trading wizard + auto-tick in Telegram bot
 
 **Summary:** Added a guided setup wizard to start paper trading from Telegram. User picks assets and research lookback; the bot runs the research grid, ranks the top 3 strategies by Win Rate, and (on selection) activates an in-bot JobQueue tick that calls `paper_log.run_once()` every hour. No external cron needed.

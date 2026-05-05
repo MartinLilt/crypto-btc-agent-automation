@@ -45,7 +45,7 @@
 ## Ideas / Backlog 💡
 
 - ~~Persistent user state~~ — done 2026-04-29 (PicklePersistence)
-- **Re-test SHORT strategy** when bear regime arrives — infrastructure exists in `_eval_bar_short()` etc., currently NOT exposed in UI because shorts are net −0% to −51% across BTC/ETH/SOL on 720d bull-regime data. See 2026-04-29 Dev Log entry.
+- ~~Expose SHORT direction across the bot~~ — done 2026-05-05. SHORT now reaches feature parity with LONG: live analysis, backtest, research grid, walk-forward, patterns, paper trading (incl. dual-direction "BOTH" mode). Disclaimer warns user about −EV on 720d bull data; whether shorts become profitable is now a paper-trade-and-validate question rather than an infrastructure question.
 - Telegram alert on signal (push without user action)
 - Web dashboard for backtest results
 - Portfolio mode (scan all 5 assets simultaneously)
