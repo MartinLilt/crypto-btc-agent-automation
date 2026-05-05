@@ -195,9 +195,62 @@ async def menu_back(update: Update,
     )
 
 
-# ── Asset chosen → run analysis immediately ───────────────────────────────────
+# ── Direction picker — shared helper ──────────────────────────────────────────
+
+def _direction_picker_keyboard(lang: str, callback_prefix: str, asset: str,
+                                allow_both: bool = False,
+                                back_callback: str = "menu_back"):
+    """Build a Long/Short(/Both) inline keyboard.
+    callbacks emit "<prefix>LONG_<asset>", "<prefix>SHORT_<asset>", "<prefix>BOTH_<asset>".
+    """
+    rows = [[
+        InlineKeyboardButton(t("btn_dir_long",  lang),
+                             callback_data=f"{callback_prefix}LONG_{asset}"),
+        InlineKeyboardButton(t("btn_dir_short", lang),
+                             callback_data=f"{callback_prefix}SHORT_{asset}"),
+    ]]
+    if allow_both:
+        rows.append([InlineKeyboardButton(
+            t("btn_dir_both", lang),
+            callback_data=f"{callback_prefix}BOTH_{asset}",
+        )])
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data=back_callback,
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _show_direction_picker(query, lang: str, asset: str,
+                                  callback_prefix: str,
+                                  allow_both: bool = False,
+                                  back_callback: str = "menu_back"):
+    """Edit message to show a direction picker. Includes -EV disclaimer line."""
+    text = (
+        t("pick_direction", lang, asset=asset) + "\n\n" +
+        t("short_disclaimer", lang)
+    )
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=_direction_picker_keyboard(
+            lang, callback_prefix, asset,
+            allow_both=allow_both, back_callback=back_callback,
+        ),
+    )
+
+
+def _parse_dir_callback(data: str, prefix: str) -> tuple[str, str]:
+    """Parse '<prefix>LONG_BTCUSDT' → ('LONG', 'BTCUSDT'). Tolerates BOTH."""
+    rest = data[len(prefix):]
+    direction, asset = rest.split("_", 1)
+    return direction.upper(), asset
+
+
+# ── Asset chosen → show direction picker ──────────────────────────────────────
 
 async def choose_asset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Live flow: asset picked → show direction picker."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
@@ -205,7 +258,6 @@ async def choose_asset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = query.data[len("asset_"):]          # e.g. "BTCUSDT"
     label = next((l for l, s in ASSETS if s == symbol), symbol)
 
-    # Save minimal config
     context.user_data[CFG] = {
         "asset":           symbol,
         "asset_label":     label,
@@ -214,6 +266,28 @@ async def choose_asset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "stop_loss_pct":   DEFAULT_SL_PCT,
         "language":        lang,
     }
+
+    await _show_direction_picker(
+        query, lang, symbol, callback_prefix="livedir_",
+        back_callback="menu_live",
+    )
+
+
+async def live_direction_chosen(update: Update,
+                                 context: ContextTypes.DEFAULT_TYPE):
+    """Live flow: direction picked → run analysis."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    direction, symbol = _parse_dir_callback(query.data, "livedir_")
+    cfg = context.user_data.setdefault(CFG, {})
+    cfg["asset"] = symbol
+    cfg["direction"] = direction
+    cfg.setdefault("budget", DEFAULT_BUDGET)
+    cfg.setdefault("take_profit_pct", DEFAULT_TP_PCT)
+    cfg.setdefault("stop_loss_pct", DEFAULT_SL_PCT)
+    cfg.setdefault("language", lang)
 
     await query.edit_message_text(
         t("analysing", lang),
@@ -247,6 +321,7 @@ async def analyse(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _run_analysis(query, context, lang: str):
     cfg = context.user_data[CFG]
+    direction = (cfg.get("direction") or "LONG").upper()
 
     try:
         from src.data.binance_client import (
@@ -259,7 +334,7 @@ async def _run_analysis(query, context, lang: str):
             get_fear_greed_index,
             get_taker_buy_pressure,
         )
-        from src.signals.indicators import check_entry_signal
+        from src.signals.indicators import check_entry_signal, check_entry_signal_short
         from src.data.news_client import get_recent_news, summarise_news
 
         symbol = cfg["asset"]
@@ -298,7 +373,8 @@ async def _run_analysis(query, context, lang: str):
             logger.warning("Buy pressure fetch failed: %s", pr_err)
             pressure_data = {"ok": False}
 
-        should_enter, report = check_entry_signal(
+        signal_fn = check_entry_signal_short if direction == "SHORT" else check_entry_signal
+        should_enter, report = signal_fn(
             candles, spread, bid_depth, ask_depth, volume_24h,
             budget=cfg["budget"],
             take_profit_pct=cfg["take_profit_pct"],
@@ -721,13 +797,30 @@ async def backtest_cmd(update: Update,
 
 async def bt_asset_chosen(update: Update,
                           context: ContextTypes.DEFAULT_TYPE):
-    """Asset selected — show period picker."""
+    """Backtest: asset selected → show direction picker."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
 
     symbol = query.data[len("bt_asset_"):]
     context.user_data["bt_symbol"] = symbol
+
+    await _show_direction_picker(
+        query, lang, symbol, callback_prefix="btdir_",
+        back_callback="bt_start",
+    )
+
+
+async def bt_direction_chosen(update: Update,
+                               context: ContextTypes.DEFAULT_TYPE):
+    """Backtest: direction selected → show period picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    direction, symbol = _parse_dir_callback(query.data, "btdir_")
+    context.user_data["bt_symbol"] = symbol
+    context.user_data["bt_direction"] = direction
 
     buttons = []
     for en, ru, days, _ in BT_PERIODS:
@@ -808,6 +901,7 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.user_data.get("bt_symbol", "BTCUSDT")
     days   = context.user_data.get("bt_days", 90)
     budget = context.user_data.get("bt_budget", 250.0)
+    direction = (context.user_data.get("bt_direction") or "LONG").upper()
 
     candles_approx = next(
         (c for _, _, d, c in BT_PERIODS if d == days), days * 24)
@@ -819,10 +913,11 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        from src.backtest.engine import run_backtest
+        from src.backtest.engine import run_backtest, run_backtest_short
+        bt_fn = run_backtest_short if direction == "SHORT" else run_backtest
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: run_backtest(symbol, days, tp_pct, sl_pct)
+            None, lambda: bt_fn(symbol, days, tp_pct, sl_pct)
         )
     except Exception as err:
         logger.exception("Backtest failed")
@@ -944,21 +1039,35 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def bt_patterns(update: Update,
                       context: ContextTypes.DEFAULT_TYPE):
-    """Show computed patterns for the last backtest symbol."""
+    """Patterns: asset chosen (or 'show patterns' button) → direction picker."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
 
     symbol = query.data[len("bt_patterns_"):]
+    await _show_direction_picker(
+        query, lang, symbol, callback_prefix="patdir_",
+        back_callback="menu_patterns",
+    )
+
+
+async def pat_direction_chosen(update: Update,
+                                context: ContextTypes.DEFAULT_TYPE):
+    """Patterns: direction chosen → compute & show."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    direction, symbol = _parse_dir_callback(query.data, "patdir_")
 
     try:
         from src.signals.pattern_analyzer import (
             compute_patterns,
             format_patterns_message,
         )
-        patterns = compute_patterns(symbol)
+        patterns = compute_patterns(symbol, direction=direction)
         msg = format_patterns_message(patterns, lang)
-    except Exception as err:
+    except Exception:
         logger.exception("Patterns failed")
         msg = t("pat_no_data", lang, symbol=symbol)
 
@@ -1139,11 +1248,25 @@ def _format_research_msg(results: list, symbol: str, lang: str) -> str:
 
 async def research_asset_chosen(update: Update,
                                 context: ContextTypes.DEFAULT_TYPE):
-    """Asset selected → run full automatic research grid."""
+    """Research grid: asset chosen → direction picker."""
     query = update.callback_query
     await query.answer()
     lang   = _lang(context)
     symbol = query.data[len("res_asset_"):]
+
+    await _show_direction_picker(
+        query, lang, symbol, callback_prefix="rgdir_",
+        back_callback="res_grid",
+    )
+
+
+async def rg_direction_chosen(update: Update,
+                               context: ContextTypes.DEFAULT_TYPE):
+    """Research grid: direction chosen → run grid."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    direction, symbol = _parse_dir_callback(query.data, "rgdir_")
 
     await query.edit_message_text(
         t("research_running", lang, symbol=symbol),
@@ -1151,11 +1274,13 @@ async def research_asset_chosen(update: Update,
     )
 
     try:
-        from src.backtest.engine import run_backtest_research
-        loop    = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None, lambda: run_backtest_research(symbol)
+        from src.backtest.engine import (
+            run_backtest_research, run_backtest_research_short,
         )
+        rg_fn = (run_backtest_research_short
+                 if direction == "SHORT" else run_backtest_research)
+        loop    = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, lambda: rg_fn(symbol))
     except Exception as err:
         logger.exception("Research failed")
         await query.edit_message_text(
@@ -1231,11 +1356,15 @@ def _format_wf_msg(symbol: str, lang: str, results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _run_walkforward(symbol: str) -> list[dict]:
-    """Walk-forward across a few TP/SL combos. Sync, runs in executor."""
+def _run_walkforward(symbol: str, direction: str = "LONG") -> list[dict]:
+    """Walk-forward across a few TP/SL combos. Sync, runs in executor.
+    direction: 'LONG' or 'SHORT'.
+    """
     from src.backtest.engine import (
-        _fetch_candles_full, _calc_stats, _run_window_loop, WARMUP_CANDLES,
+        _fetch_candles_full, _calc_stats, _run_window_loop,
+        _run_window_loop_short, WARMUP_CANDLES,
     )
+    loop_fn = _run_window_loop_short if direction.upper() == "SHORT" else _run_window_loop
     combos = [(2.0, 1.0), (2.5, 1.25), (3.0, 1.5), (4.0, 2.0)]
     candles = _fetch_candles_full(symbol, 720)
     candles_4h = _fetch_candles_full(symbol, 720, "4h")
@@ -1247,9 +1376,9 @@ def _run_walkforward(symbol: str) -> list[dict]:
 
     out = []
     for tp, sl in combos:
-        t1, _ = _run_window_loop(symbol, first, tp, sl, candles_4h=candles_4h)
+        t1, _ = loop_fn(symbol, first, tp, sl, candles_4h=candles_4h)
         s1 = _calc_stats(t1, len(first) - WARMUP_CANDLES, tp, sl)
-        t2, _ = _run_window_loop(symbol, second, tp, sl, candles_4h=candles_4h)
+        t2, _ = loop_fn(symbol, second, tp, sl, candles_4h=candles_4h)
         s2 = _calc_stats(t2, len(second) - WARMUP_CANDLES, tp, sl)
 
         in_net = s1["total_pnl_after_tax_pct"]
@@ -1271,11 +1400,25 @@ def _run_walkforward(symbol: str) -> list[dict]:
 
 
 async def wf_asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Walk-forward: asset chosen → run validation."""
+    """Walk-forward: asset chosen → direction picker."""
     query = update.callback_query
     await query.answer()
     lang   = _lang(context)
     symbol = query.data[len("wf_asset_"):]
+
+    await _show_direction_picker(
+        query, lang, symbol, callback_prefix="wfdir_",
+        back_callback="res_wf",
+    )
+
+
+async def wf_direction_chosen(update: Update,
+                               context: ContextTypes.DEFAULT_TYPE):
+    """Walk-forward: direction chosen → run validation."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    direction, symbol = _parse_dir_callback(query.data, "wfdir_")
 
     await query.edit_message_text(
         t("wf_running", lang, symbol=symbol),
@@ -1284,7 +1427,8 @@ async def wf_asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         loop    = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, lambda: _run_walkforward(symbol))
+        results = await loop.run_in_executor(
+            None, lambda: _run_walkforward(symbol, direction=direction))
     except Exception as err:
         logger.exception("Walk-forward failed")
         await query.edit_message_text(
@@ -1345,10 +1489,13 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
         ])
         empty_msg = t("paper_dashboard_empty", lang)
         if active_cfg:
+            dir_lbl = (active_cfg.get("direction") or "LONG").upper()
             cfg_line = (
-                f"\n\n🟢 *Active*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+                f"\n\n🟢 *Active*: `{active_cfg['symbol']}` {dir_lbl} "
+                f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
                 if lang == "en" else
-                f"\n\n🟢 *Активно*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+                f"\n\n🟢 *Активно*: `{active_cfg['symbol']}` {dir_lbl} "
+                f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
             )
             empty_msg = empty_msg + cfg_line
         await query.edit_message_text(
@@ -1395,8 +1542,10 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         for tr in open_trades[:10]:
             entry_dt = tr["entry_time"][:16].replace("T", " ")
+            tdir = (tr.get("direction") or "LONG").upper()
+            dir_emoji = "📉" if tdir == "SHORT" else "📈"
             lines.append(
-                f"  *{tr['symbol']}* @ ${tr['entry_price']:.2f} "
+                f"  {dir_emoji} *{tr['symbol']}* {tdir} @ ${tr['entry_price']:.2f} "
                 f"(TP ${tr['tp_price']:.2f} / SL ${tr['sl_price']:.2f}) "
                 f"_opened {entry_dt}_"
             )
@@ -1413,9 +1562,11 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
         for tr in recent:
             icon = {"TP_HIT": "✅", "SL_HIT": "❌", "TIMEOUT": "⏰"}.get(tr["status"], "·")
             pnl = tr["pnl_pct_net_fees"] or 0
+            tdir = (tr.get("direction") or "LONG").upper()
+            dir_emoji = "📉" if tdir == "SHORT" else "📈"
             lines.append(
-                f"  {icon} *{tr['symbol']}* {pnl:+.2f}% · {tr['hold_hours'] or 0}h · "
-                f"{tr['status']}"
+                f"  {icon} {dir_emoji} *{tr['symbol']}* {pnl:+.2f}% · "
+                f"{tr['hold_hours'] or 0}h · {tr['status']}"
             )
 
     msg = "\n".join(lines)
@@ -1423,10 +1574,13 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
         msg = msg[:4087] + "…"
 
     if active_cfg:
+        dir_lbl = (active_cfg.get("direction") or "LONG").upper()
         cfg_line = (
-            f"\n🟢 *Active*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+            f"\n🟢 *Active*: `{active_cfg['symbol']}` {dir_lbl} "
+            f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
             if lang == "en" else
-            f"\n🟢 *Активно*: `{active_cfg['symbol']}` TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
+            f"\n🟢 *Активно*: `{active_cfg['symbol']}` {dir_lbl} "
+            f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
         )
         lines.insert(1, cfg_line)
 
@@ -1499,7 +1653,7 @@ async def ps_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ps_assets_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 1 done — show period picker."""
+    """Step 1 done — show direction picker (LONG / SHORT / BOTH)."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
@@ -1507,12 +1661,42 @@ async def ps_assets_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not selected:
         await query.answer(t("ps_no_assets", lang), show_alert=True)
         return
+    rows = [
+        [InlineKeyboardButton(t("btn_dir_long",  lang), callback_data="psdir_LONG")],
+        [InlineKeyboardButton(t("btn_dir_short", lang), callback_data="psdir_SHORT")],
+        [InlineKeyboardButton(t("btn_dir_both",  lang), callback_data="psdir_BOTH")],
+        [InlineKeyboardButton(
+            "⬅️ " + ("Back" if lang == "en" else "Назад"),
+            callback_data="ps_setup",
+        )],
+    ]
+    text = t("ps_pick_direction", lang) + "\n\n" + t("short_disclaimer", lang)
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def ps_direction_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 2 done — save direction, show period picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    direction = query.data[len("psdir_"):].upper()
+    if direction not in ("LONG", "SHORT", "BOTH"):
+        await query.answer("Bad direction", show_alert=True)
+        return
+    context.user_data["ps_direction"] = direction
+
     rows = [[
         InlineKeyboardButton(f"{d}d", callback_data=f"ps_period_{d}")
         for d in PAPER_PERIODS
     ]]
-    rows.append([InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
-                                       callback_data="ps_setup")])
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data="ps_assets_done",
+    )])
     await query.edit_message_text(
         t("ps_pick_period", lang),
         parse_mode="Markdown",
@@ -1520,12 +1704,17 @@ async def ps_assets_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _research_for_assets(assets: list[str], days: int) -> list[dict]:
-    """Run research grid for chosen assets. Returns flat list of (symbol+combo) results."""
+def _research_for_assets(assets: list[str], days: int,
+                         direction: str = "LONG") -> list[dict]:
+    """Run research grid for chosen assets in a direction.
+    direction: 'LONG' or 'SHORT'. Returns flat list of result dicts.
+    """
     from src.backtest.engine import (
-        _fetch_candles_full, _calc_stats, _run_window_loop, WARMUP_CANDLES,
-        RESEARCH_TP_SL,
+        _fetch_candles_full, _calc_stats, _run_window_loop,
+        _run_window_loop_short, WARMUP_CANDLES, RESEARCH_TP_SL,
     )
+    direction = direction.upper()
+    loop_fn = _run_window_loop_short if direction == "SHORT" else _run_window_loop
     needed = days * 24 + WARMUP_CANDLES
     out = []
     for sym in assets:
@@ -1533,10 +1722,11 @@ def _research_for_assets(assets: list[str], days: int) -> list[dict]:
         candles_4h = _fetch_candles_full(sym, days, "4h")
         sub = candles[-needed:] if len(candles) >= needed else candles
         for tp, sl in RESEARCH_TP_SL:
-            trades, total = _run_window_loop(sym, sub, tp, sl, candles_4h=candles_4h)
+            trades, total = loop_fn(sym, sub, tp, sl, candles_4h=candles_4h)
             stats = _calc_stats(trades, total, tp, sl)
             out.append({
-                "symbol": sym, "days": days, "tp_pct": tp, "sl_pct": sl,
+                "symbol": sym, "direction": direction,
+                "days": days, "tp_pct": tp, "sl_pct": sl,
                 "n_signals": stats["total_signals"],
                 "wr_pct": stats["win_rate_pct"],
                 "net_pct": stats["total_pnl_net_fees_pct"],
@@ -1547,12 +1737,15 @@ def _research_for_assets(assets: list[str], days: int) -> list[dict]:
 
 
 async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User picked period — run research and rank top 3 by WR."""
+    """User picked period — run research per direction and rank top 3 by WR.
+    For BOTH: produces top-3 LONG + top-3 SHORT (six total)."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
     days = int(query.data[len("ps_period_"):])
     assets = _ps_assets(context)
+    direction = (context.user_data.get("ps_direction") or "LONG").upper()
+    directions_to_research = ["LONG", "SHORT"] if direction == "BOTH" else [direction]
 
     await query.edit_message_text(
         t("ps_running", lang, n=len(assets), days=days),
@@ -1561,8 +1754,13 @@ async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None, lambda: _research_for_assets(assets, days))
+        all_results: list[dict] = []
+        for dir_name in directions_to_research:
+            res = await loop.run_in_executor(
+                None,
+                lambda d=dir_name: _research_for_assets(assets, days, direction=d),
+            )
+            all_results.extend(res)
     except Exception as err:
         logger.exception("Paper-setup research failed")
         await query.edit_message_text(
@@ -1571,15 +1769,21 @@ async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Filter to combos with ≥10 signals; rank by WR desc, tiebreak by net%
-    valid = [r for r in results if r["n_signals"] >= 10]
-    valid.sort(key=lambda r: (r["wr_pct"], r["net_pct"]), reverse=True)
-    top3 = valid[:3]
+    # Filter to combos with ≥10 signals
+    valid = [r for r in all_results if r["n_signals"] >= 10]
 
-    if not top3:
+    # For each direction independently take top-3 by WR
+    candidates: list[dict] = []
+    for dir_name in directions_to_research:
+        per_dir = [r for r in valid if r["direction"] == dir_name]
+        per_dir.sort(key=lambda r: (r["wr_pct"], r["net_pct"]), reverse=True)
+        candidates.extend(per_dir[:3])
+
+    if not candidates:
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
-                                 callback_data="ps_setup")
+            InlineKeyboardButton(
+                "⬅️ " + ("Back" if lang == "en" else "Назад"),
+                callback_data="ps_setup")
         ]])
         await query.edit_message_text(
             t("ps_no_strategies", lang),
@@ -1588,24 +1792,37 @@ async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Stash candidates so the picker callback can resolve by index
-    context.user_data["ps_candidates"] = top3
+    context.user_data["ps_candidates"] = candidates
 
-    lines = [t("ps_top3_header", lang)]
     medals = ["🥇", "🥈", "🥉"]
+    lines = [t("ps_top3_header", lang)]
     rows = []
-    for i, r in enumerate(top3):
-        lines.append(
-            f"{medals[i]} *{r['symbol']}* TP {_fmt_pct(r['tp_pct'])}% / SL {_fmt_pct(r['sl_pct'])}%\n"
-            f"   WR {r['wr_pct']:.1f}%  ·  Net {r['net_pct']:+.2f}%  "
-            f"·  Sharpe {r['sharpe']:.1f}  ·  {r['n_signals']} signals"
-        )
-        rows.append([InlineKeyboardButton(
-            f"{medals[i]} {r['symbol']} TP{_fmt_pct(r['tp_pct'])}/SL{_fmt_pct(r['sl_pct'])}",
-            callback_data=f"ps_pick_{i}")])
+    # Group by direction in display
+    cursor = 0
+    for dir_name in directions_to_research:
+        dir_label = t(f"label_direction_{dir_name.lower()}", lang)
+        per_dir = [r for r in candidates if r["direction"] == dir_name][:3]
+        if not per_dir:
+            continue
+        if direction == "BOTH":
+            lines.append(f"\n*{dir_label}*")
+        for i, r in enumerate(per_dir):
+            global_idx = cursor + i
+            lines.append(
+                f"{medals[i]} *{r['symbol']}* TP {_fmt_pct(r['tp_pct'])}% "
+                f"/ SL {_fmt_pct(r['sl_pct'])}%\n"
+                f"   WR {r['wr_pct']:.1f}%  ·  Net {r['net_pct']:+.2f}%  "
+                f"·  Sharpe {r['sharpe']:.1f}  ·  {r['n_signals']} signals"
+            )
+            btn_label = (f"{medals[i]} {dir_label} {r['symbol']} "
+                         f"TP{_fmt_pct(r['tp_pct'])}/SL{_fmt_pct(r['sl_pct'])}")
+            rows.append([InlineKeyboardButton(
+                btn_label, callback_data=f"ps_pick_{global_idx}")])
+        cursor += len(per_dir)
 
-    rows.append([InlineKeyboardButton("⬅️ " + ("Back" if lang == "en" else "Назад"),
-                                       callback_data="ps_setup")])
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data="ps_setup")])
     await query.edit_message_text(
         "\n\n".join(lines),
         parse_mode="Markdown",
@@ -1628,6 +1845,7 @@ async def ps_strategy_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     cfg = {
         "active": True,
         "symbol": chosen["symbol"],
+        "direction": (chosen.get("direction") or "LONG").upper(),
         "tp_pct": chosen["tp_pct"],
         "sl_pct": chosen["sl_pct"],
         "days":   chosen["days"],
@@ -1713,6 +1931,7 @@ async def _paper_log_tick(context):
                 assets=[cfg["symbol"]],
                 tp_pct=cfg["tp_pct"],
                 sl_pct=cfg["sl_pct"],
+                direction=cfg.get("direction", "LONG"),
             ),
         )
         logger.info("Paper tick: %s", result)
@@ -1902,14 +2121,25 @@ def main():
     app.add_handler(CallbackQueryHandler(ps_setup, pattern="^ps_setup$"))
     app.add_handler(CallbackQueryHandler(ps_toggle, pattern="^ps_toggle_"))
     app.add_handler(CallbackQueryHandler(ps_assets_done, pattern="^ps_assets_done$"))
+    app.add_handler(CallbackQueryHandler(ps_direction_chosen, pattern="^psdir_"))
     app.add_handler(CallbackQueryHandler(ps_period_chosen, pattern="^ps_period_"))
     app.add_handler(CallbackQueryHandler(ps_strategy_chosen, pattern="^ps_pick_"))
     app.add_handler(CallbackQueryHandler(ps_stop, pattern="^ps_stop$"))
+    # Research-grid + Walk-forward + Patterns: asset → direction → run
     app.add_handler(CallbackQueryHandler(
         research_asset_chosen, pattern="^res_asset_"))
     app.add_handler(CallbackQueryHandler(
+        rg_direction_chosen, pattern="^rgdir_"))
+    app.add_handler(CallbackQueryHandler(
         wf_asset_chosen, pattern="^wf_asset_"))
+    app.add_handler(CallbackQueryHandler(
+        wf_direction_chosen, pattern="^wfdir_"))
+    app.add_handler(CallbackQueryHandler(
+        pat_direction_chosen, pattern="^patdir_"))
+    # Live: asset → direction → analysis
     app.add_handler(CallbackQueryHandler(choose_asset,  pattern="^asset_"))
+    app.add_handler(CallbackQueryHandler(
+        live_direction_chosen, pattern="^livedir_"))
     app.add_handler(CallbackQueryHandler(analyse,       pattern="^analyse$"))
     app.add_handler(CallbackQueryHandler(
         pick_asset,    pattern="^pick_asset$"))
@@ -1925,6 +2155,8 @@ def main():
         bt_start,         pattern="^bt_start$"))
     app.add_handler(CallbackQueryHandler(
         bt_asset_chosen,  pattern="^bt_asset_"))
+    app.add_handler(CallbackQueryHandler(
+        bt_direction_chosen, pattern="^btdir_"))
     app.add_handler(CallbackQueryHandler(
         bt_period_chosen,  pattern="^bt_period_"))
     app.add_handler(CallbackQueryHandler(

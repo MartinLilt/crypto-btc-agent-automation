@@ -36,6 +36,7 @@ load_dotenv()
 
 from src.backtest.engine import (
     _eval_bar,
+    _eval_bar_short,
     _fetch_candles_full,
     BINANCE_FEE_PCT,
     MAX_HOLD_HOURS,
@@ -90,6 +91,7 @@ def notify(text: str) -> bool:
 def _check_open_trade(trade: dict, candles: list) -> dict | None:
     """
     Scan candles for TP/SL/timeout against an open trade.
+    Direction-aware: SHORT inverts TP/SL geometry and PnL sign.
     Returns close payload (status, exit_price, exit_time, pnl_pct, ...) or None if still open.
     """
     entry_dt = datetime.fromisoformat(trade["entry_time"].replace("Z", "+00:00"))
@@ -99,6 +101,8 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
     tp_price = trade["tp_price"]
     sl_price = trade["sl_price"]
     entry_price = trade["entry_price"]
+    direction = (trade.get("direction") or "LONG").upper()
+    is_short = direction == "SHORT"
 
     relevant = [
         c for c in candles
@@ -109,9 +113,14 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
         c_time = datetime.fromtimestamp(c["open_time_ms"] / 1000, tz=timezone.utc)
         hold_hours = int((c_time - entry_dt).total_seconds() / 3600)
 
-        # Conservative: check SL before TP (worst-fill assumption)
-        if c["low"] <= sl_price:
-            pnl = (sl_price - entry_price) / entry_price * 100
+        # SL hit — for LONG: low <= sl (price drops); for SHORT: high >= sl (price rises)
+        sl_hit = (c["high"] >= sl_price) if is_short else (c["low"] <= sl_price)
+        # TP hit — for LONG: high >= tp; for SHORT: low <= tp
+        tp_hit = (c["low"] <= tp_price) if is_short else (c["high"] >= tp_price)
+
+        if sl_hit:
+            pnl_raw = (entry_price - sl_price) if is_short else (sl_price - entry_price)
+            pnl = pnl_raw / entry_price * 100
             return {
                 "status": "SL_HIT",
                 "exit_price": sl_price,
@@ -120,8 +129,9 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
                 "pnl_pct_net_fees": round(pnl - BINANCE_FEE_PCT * 2, 4),
                 "hold_hours": hold_hours,
             }
-        if c["high"] >= tp_price:
-            pnl = (tp_price - entry_price) / entry_price * 100
+        if tp_hit:
+            pnl_raw = (entry_price - tp_price) if is_short else (tp_price - entry_price)
+            pnl = pnl_raw / entry_price * 100
             return {
                 "status": "TP_HIT",
                 "exit_price": tp_price,
@@ -131,7 +141,8 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
                 "hold_hours": hold_hours,
             }
         if hold_hours >= MAX_HOLD_HOURS:
-            pnl = (c["close"] - entry_price) / entry_price * 100
+            pnl_raw = (entry_price - c["close"]) if is_short else (c["close"] - entry_price)
+            pnl = pnl_raw / entry_price * 100
             return {
                 "status": "TIMEOUT",
                 "exit_price": c["close"],
@@ -148,10 +159,11 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
 
 def _check_for_signal(symbol: str, candles: list,
                        tp_pct: float, sl_pct: float,
-                       candles_4h: list | None = None) -> dict | None:
+                       candles_4h: list | None = None,
+                       direction: str = "LONG") -> dict | None:
     """
-    Run _eval_bar on the latest fully-closed candle.
-    Returns trade payload to open, or None.
+    Run _eval_bar (or its short mirror) on the latest fully-closed candle.
+    Returns trade payload to open, or None. SHORT inverts TP/SL price geometry.
     """
     if len(candles) < WARMUP_CANDLES + 2:
         logger.warning("%s: not enough candles (%d)", symbol, len(candles))
@@ -164,8 +176,11 @@ def _check_for_signal(symbol: str, candles: list,
 
     from src.backtest.engine import _slice_4h_at
     slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
-    fired, snapshot = _eval_bar(window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
-                                candles_4h=slice_4h)
+
+    is_short = direction.upper() == "SHORT"
+    eval_fn = _eval_bar_short if is_short else _eval_bar
+    fired, snapshot = eval_fn(window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
+                              candles_4h=slice_4h)
     if not fired:
         return None
 
@@ -174,14 +189,22 @@ def _check_for_signal(symbol: str, candles: list,
         candles[signal_idx + 1]["open_time_ms"] / 1000, tz=timezone.utc
     ).isoformat()
 
+    if is_short:
+        tp_price = round(entry_price * (1 - tp_pct / 100), 4)
+        sl_price = round(entry_price * (1 + sl_pct / 100), 4)
+    else:
+        tp_price = round(entry_price * (1 + tp_pct / 100), 4)
+        sl_price = round(entry_price * (1 - sl_pct / 100), 4)
+
     return {
         "symbol":         symbol,
+        "direction":      "SHORT" if is_short else "LONG",
         "entry_time":     entry_time,
         "entry_price":    entry_price,
         "tp_pct":         tp_pct,
         "sl_pct":         sl_pct,
-        "tp_price":       round(entry_price * (1 + tp_pct / 100), 4),
-        "sl_price":       round(entry_price * (1 - sl_pct / 100), 4),
+        "tp_price":       tp_price,
+        "sl_price":       sl_price,
         "total_score":    snapshot.get("total_score"),
         "layer_snapshot": json.dumps({
             k: v for k, v in snapshot.items()
@@ -195,17 +218,25 @@ def _check_for_signal(symbol: str, candles: list,
 
 def run_once(assets: list[str] | None = None,
              tp_pct: float | None = None,
-             sl_pct: float | None = None) -> dict:
+             sl_pct: float | None = None,
+             direction: str = "LONG") -> dict:
     """
     One iteration of paper-trading: update open trades, evaluate new signals,
     open trades on hits. Returns summary dict.
 
-    Importable from the bot: just pass desired assets and TP/SL.
+    direction: 'LONG', 'SHORT', or 'BOTH'. When BOTH, both directions are scanned
+    independently — long and short positions can coexist for the same symbol.
+
+    Importable from the bot: just pass desired assets, TP/SL, and direction.
     Falls back to module-level defaults (env-driven) when args are None.
     """
     use_assets = assets if assets else ASSETS
     use_tp = tp_pct if tp_pct is not None else TP_PCT
     use_sl = sl_pct if sl_pct is not None else SL_PCT
+    direction = direction.upper()
+    if direction not in ("LONG", "SHORT", "BOTH"):
+        raise ValueError(f"direction must be LONG/SHORT/BOTH, got {direction!r}")
+    directions_to_scan = ["LONG", "SHORT"] if direction == "BOTH" else [direction]
 
     init_db()
 
@@ -222,7 +253,7 @@ def run_once(assets: list[str] | None = None,
     closed_count = 0
     opened_count = 0
 
-    # 1. Update open trades — across ALL symbols (not just current config)
+    # 1. Update open trades — across ALL symbols, both directions
     for trade in get_open_paper_trades():
         symbol = trade["symbol"]
         candles = candles_by_asset.get(symbol)
@@ -241,13 +272,15 @@ def run_once(assets: list[str] | None = None,
                 outcome["pnl_pct_net_fees"], outcome["hold_hours"],
             )
             closed_count += 1
-            logger.info("CLOSED #%d %s %s: %.2f%% (%dh)",
-                        trade["id"], symbol, outcome["status"],
+            trade_dir = (trade.get("direction") or "LONG").upper()
+            logger.info("CLOSED #%d %s %s %s: %.2f%% (%dh)",
+                        trade["id"], symbol, trade_dir, outcome["status"],
                         outcome["pnl_pct_net_fees"], outcome["hold_hours"])
             emoji = "✅" if outcome["status"] == "TP_HIT" else "❌" if outcome["status"] == "SL_HIT" else "⏰"
+            dir_emoji = "📉" if trade_dir == "SHORT" else "📈"
             sent = notify(
                 f"{emoji} <b>Paper trade #{trade['id']} closed</b>\n"
-                f"Asset: <code>{symbol}</code>\n"
+                f"Asset: <code>{symbol}</code> {dir_emoji} {trade_dir}\n"
                 f"Status: {outcome['status']}\n"
                 f"P&L: <b>{outcome['pnl_pct_net_fees']:+.2f}%</b> (after 0.2% fees)\n"
                 f"Hold: {outcome['hold_hours']}h\n"
@@ -256,36 +289,43 @@ def run_once(assets: list[str] | None = None,
             if sent:
                 mark_paper_notified(trade["id"], "close")
 
-    # 2. Look for new signals — only on the assets in this run's config
+    # 2. Look for new signals — per asset × direction
     for symbol in use_assets:
         candles = candles_by_asset.get(symbol)
         if not candles:
             continue
-        if has_open_paper_trade(symbol):
-            logger.info("%s: skipping (open trade exists)", symbol)
-            continue
-        signal = _check_for_signal(symbol, candles, use_tp, use_sl,
-                                   candles_4h_by_asset.get(symbol))
-        if not signal:
-            continue
-        trade_id = open_paper_trade(signal)
-        opened_count += 1
-        logger.info("OPENED #%d %s @ $%.2f (TP $%.2f, SL $%.2f)",
-                    trade_id, symbol, signal["entry_price"],
-                    signal["tp_price"], signal["sl_price"])
-        sent = notify(
-            f"📊 <b>Paper trade #{trade_id} opened</b>\n"
-            f"Asset: <code>{symbol}</code>\n"
-            f"Entry: ${signal['entry_price']:.2f}\n"
-            f"TP: ${signal['tp_price']:.2f} (+{use_tp}%)\n"
-            f"SL: ${signal['sl_price']:.2f} (-{use_sl}%)\n"
-            f"Score: {signal['total_score']}/100"
-        )
-        if sent:
-            mark_paper_notified(trade_id, "open")
+        for dir_name in directions_to_scan:
+            # Independent open trades per direction (long and short can coexist)
+            if has_open_paper_trade(symbol, dir_name):
+                logger.info("%s %s: skipping (open trade exists)", symbol, dir_name)
+                continue
+            signal = _check_for_signal(symbol, candles, use_tp, use_sl,
+                                       candles_4h_by_asset.get(symbol),
+                                       direction=dir_name)
+            if not signal:
+                continue
+            trade_id = open_paper_trade(signal)
+            opened_count += 1
+            logger.info("OPENED #%d %s %s @ $%.2f (TP $%.2f, SL $%.2f)",
+                        trade_id, symbol, dir_name, signal["entry_price"],
+                        signal["tp_price"], signal["sl_price"])
+            tp_label = f"-{use_tp}%" if dir_name == "SHORT" else f"+{use_tp}%"
+            sl_label = f"+{use_sl}%" if dir_name == "SHORT" else f"-{use_sl}%"
+            dir_emoji = "📉" if dir_name == "SHORT" else "📈"
+            sent = notify(
+                f"📊 <b>Paper trade #{trade_id} opened</b>\n"
+                f"Asset: <code>{symbol}</code> {dir_emoji} {dir_name}\n"
+                f"Entry: ${signal['entry_price']:.2f}\n"
+                f"TP: ${signal['tp_price']:.2f} ({tp_label})\n"
+                f"SL: ${signal['sl_price']:.2f} ({sl_label})\n"
+                f"Score: {signal['total_score']}/100"
+            )
+            if sent:
+                mark_paper_notified(trade_id, "open")
 
-    logger.info("Run complete: %d opened, %d closed", opened_count, closed_count)
-    return {"opened": opened_count, "closed": closed_count}
+    logger.info("Run complete (%s): %d opened, %d closed",
+                direction, opened_count, closed_count)
+    return {"opened": opened_count, "closed": closed_count, "direction": direction}
 
 
 def main() -> int:

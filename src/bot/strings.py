@@ -588,6 +588,54 @@ STRINGS = {
         "en": "◀️ Back",
         "ru": "◀️ Назад",
     },
+
+    # ── Direction picker ──────────────────────────────────────────────────────
+    "pick_direction": {
+        "en": "*{asset}* — choose direction:",
+        "ru": "*{asset}* — выбери направление:",
+    },
+    "btn_dir_long": {
+        "en": "📈 LONG (buy)",
+        "ru": "📈 LONG (покупка)",
+    },
+    "btn_dir_short": {
+        "en": "📉 SHORT (sell)",
+        "ru": "📉 SHORT (продажа)",
+    },
+    "btn_dir_both": {
+        "en": "🔀 BOTH",
+        "ru": "🔀 ОБА",
+    },
+    "short_disclaimer": {
+        "en": (
+            "⚠️ *Heads up:* on the available 720-day data (mostly bull regime), "
+            "SHORT is net-negative on every asset (BTC ≈0%, SOL −36%, ETH −51%). "
+            "Useful for validating bear-regime behaviour."
+        ),
+        "ru": (
+            "⚠️ *Внимание:* на доступных 720д данных (в основном бычий режим) "
+            "SHORT убыточен по всем активам (BTC ≈0%, SOL −36%, ETH −51%). "
+            "Полезно для проверки поведения в bear-режиме."
+        ),
+    },
+    "label_direction_long": {
+        "en": "📈 LONG",
+        "ru": "📈 LONG",
+    },
+    "label_direction_short": {
+        "en": "📉 SHORT",
+        "ru": "📉 SHORT",
+    },
+    "label_direction_both": {
+        "en": "🔀 BOTH",
+        "ru": "🔀 ОБА",
+    },
+
+    # ── Paper wizard direction step ───────────────────────────────────────────
+    "ps_pick_direction": {
+        "en": "*Step 2*: pick direction(s) to paper-trade:",
+        "ru": "*Шаг 2*: выбери направление(я) для paper trading:",
+    },
 }
 
 

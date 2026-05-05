@@ -240,6 +240,9 @@ def init_db():
         for col_def in [
             "ALTER TABLE backtest_trades ADD COLUMN total_score INTEGER",
             "ALTER TABLE backtest_trades ADD COLUMN pnl_pct_net_fees REAL",
+            "ALTER TABLE backtest_runs   ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'",
+            "ALTER TABLE backtest_trades ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'",
+            "ALTER TABLE paper_trades    ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'",
         ]:
             try:
                 con.execute(col_def)
@@ -257,7 +260,7 @@ def save_backtest_run(meta: dict) -> int:
     meta keys match column names of backtest_runs.
     """
     cols = [
-        "symbol", "interval", "days", "tp_pct", "sl_pct",
+        "symbol", "direction", "interval", "days", "tp_pct", "sl_pct",
         "total_candles", "total_signals", "wins", "losses", "timeouts",
         "win_rate_pct", "avg_profit_pct", "avg_loss_pct", "total_pnl_pct",
         "max_drawdown_pct", "sharpe_ratio", "signal_freq",
@@ -278,7 +281,7 @@ def save_backtest_trades(run_id: int, trades: list[dict]):
     if not trades:
         return
     cols = [
-        "run_id", "symbol",
+        "run_id", "symbol", "direction",
         "entry_time", "entry_price", "weekday", "hour_utc",
         "l1_atr", "l1_adx", "l2_ema50", "l2_ema200", "l2_gap_pct",
         "l3_rsi", "l3_macd_hist", "l4_pass", "l5_spread_pct", "l6_rr_ratio",
@@ -302,9 +305,10 @@ def save_backtest_trades(run_id: int, trades: list[dict]):
 
 # ── Read helpers ──────────────────────────────────────────────────────────────
 
-def get_trades(symbol: str, days: Optional[int] = None) -> list[dict]:
+def get_trades(symbol: str, days: Optional[int] = None,
+               direction: str = "LONG") -> list[dict]:
     """
-    Load trade records for a symbol.
+    Load trade records for a symbol+direction.
     Optionally filter to last N days by entry_time.
     Returns list of dicts.
     """
@@ -312,15 +316,16 @@ def get_trades(symbol: str, days: Optional[int] = None) -> list[dict]:
         if days:
             rows = con.execute(
                 """SELECT * FROM backtest_trades
-                   WHERE symbol = ?
+                   WHERE symbol = ? AND direction = ?
                      AND entry_time >= datetime('now', ?)
                    ORDER BY entry_time""",
-                (symbol, f"-{days} days"),
+                (symbol, direction, f"-{days} days"),
             ).fetchall()
         else:
             rows = con.execute(
-                "SELECT * FROM backtest_trades WHERE symbol = ? ORDER BY entry_time",
-                (symbol,),
+                "SELECT * FROM backtest_trades "
+                "WHERE symbol = ? AND direction = ? ORDER BY entry_time",
+                (symbol, direction),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -465,7 +470,7 @@ def get_closed_positions(limit: int = 20) -> list[dict]:
 def open_paper_trade(data: dict) -> int:
     """Insert a new OPEN paper trade. Returns new row id."""
     cols = [
-        "symbol", "entry_time", "entry_price",
+        "symbol", "direction", "entry_time", "entry_price",
         "tp_pct", "sl_pct", "tp_price", "sl_price",
         "total_score", "layer_snapshot",
     ]
@@ -489,12 +494,13 @@ def get_open_paper_trades() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def has_open_paper_trade(symbol: str) -> bool:
-    """Check if there's an OPEN paper trade for this symbol."""
+def has_open_paper_trade(symbol: str, direction: str = "LONG") -> bool:
+    """Check if there's an OPEN paper trade for this symbol+direction."""
     with _conn() as con:
         row = con.execute(
-            "SELECT 1 FROM paper_trades WHERE symbol = ? AND status = 'OPEN' LIMIT 1",
-            (symbol,),
+            "SELECT 1 FROM paper_trades "
+            "WHERE symbol = ? AND direction = ? AND status = 'OPEN' LIMIT 1",
+            (symbol, direction),
         ).fetchone()
         return row is not None
 

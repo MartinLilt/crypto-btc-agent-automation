@@ -903,6 +903,7 @@ def check_entry_signal(
             "fear_greed": supp_fg,
         },
     }
+    return should_enter, report
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1110,5 +1111,120 @@ def check_sell_pressure(pressure_data: dict, funding_data: dict | None = None) -
         "trend": pressure_data.get("trend", "neutral"),
         "skipped": False,
         "funding_rate": funding_rate, "fr_modifier": fr_modifier,
+    }
+
+
+def check_entry_signal_short(
+    candles: list,
+    spread: float,
+    bid_depth: float,
+    ask_depth: float,
+    volume_24h: float,
+    budget: float = 100.0,
+    take_profit_pct: float = 2.0,
+    stop_loss_pct: float = 1.0,
+    news_summary: dict | None = None,
+    funding_data: dict | None = None,
+    fg_data: dict | None = None,
+    pressure_data: dict | None = None,
+    candles_4h: list | None = None,
+    candles_1d: list | None = None,
+    candles_1w: list | None = None,
+) -> tuple[bool, dict]:
+    """Mirror of check_entry_signal for SHORT entries.
+    Same data, direction-flipped scoring on L2/L3/L8/L9/L10. Hard blocks inverted:
+    RSI oversold (<35), daily/weekly EMA alignment requires bearish (price < EMA).
+    """
+    from src.signals.support_resistance import check_sr_proximity_short
+
+    l1_score, l1   = is_market_moving(candles)
+    l2_score, l2   = is_downtrend(candles, candles_4h=candles_4h)
+    l3_score, l3   = is_not_oversold(candles, candles_4h=candles_4h)
+    l4_score, l4   = is_volume_trending(candles)
+    l5_score, l5   = has_liquidity(spread, bid_depth, ask_depth, volume_24h)
+    l6_score, l6   = check_risk_reward(
+        budget, take_profit_pct, stop_loss_pct,
+        atr=l1.get("atr"), price=candles[-1]["close"] if candles else None,
+    )
+    l7_score, l7   = check_news_sentiment(news_summary or {})
+    # Invert news: bullish news is bad for shorts
+    if l7.get("score") is not None:
+        l7_score = 10 - l7_score
+        l7["score"] = l7_score
+        l7["pass"] = l7_score >= 7
+    l8_score, l8   = check_sr_proximity_short(candles, tp_pct=take_profit_pct)
+    long_l9_score, l9_long = detect_candle_patterns(candles, candles_4h=candles_4h)
+    # Bearish patterns score low in long detector → invert for shorts
+    l9_score = 10 - long_l9_score
+    l9 = {**l9_long, "score": l9_score, "pass": l9_score >= 7}
+    l10_score, l10 = check_sell_pressure(pressure_data or {}, funding_data=funding_data)
+
+    _, supp_funding  = check_funding_rate(funding_data or {})
+    _, supp_fg       = check_fear_greed(fg_data or {})
+
+    total_score = (l1_score + l2_score + l3_score + l4_score + l5_score +
+                   l6_score + l7_score + l8_score + l9_score + l10_score)
+
+    hard_blocks = []
+
+    # RSI oversold: avoid shorting into bottoms
+    if l3.get("rsi", 50) < 35:
+        hard_blocks.append(f"RSI {l3['rsi']:.0f} < 35 (oversold — high bounce risk)")
+
+    # ADX danger zone — same instability concern in both directions
+    adx_val = l1.get("adx", 0)
+    if 25 <= adx_val < 40:
+        hard_blocks.append(
+            f"ADX {adx_val:.1f} in danger zone 25–40 "
+            f"(trend developing but unstable)"
+        )
+
+    # Daily trend: only short when price < daily EMA50 (bear market)
+    if candles_1d and len(candles_1d) >= 50:
+        ema50_1d = calculate_ema(candles_1d, 50)
+        if ema50_1d:
+            price_1d = candles_1d[-1]["close"]
+            ema50_1d_val = ema50_1d[-1]
+            if price_1d > ema50_1d_val:
+                hard_blocks.append(
+                    f"Daily trend bullish "
+                    f"(price ${price_1d:,.0f} > daily EMA50 ${ema50_1d_val:,.0f})"
+                )
+
+    # Weekly trend: only short when price < weekly EMA21
+    if candles_1w and len(candles_1w) >= 21:
+        ema21_1w = calculate_ema(candles_1w, 21)
+        if ema21_1w:
+            price_1w = candles_1w[-1]["close"]
+            ema21_1w_val = ema21_1w[-1]
+            if price_1w > ema21_1w_val:
+                hard_blocks.append(
+                    f"Weekly trend bullish "
+                    f"(price ${price_1w:,.0f} > weekly EMA21 ${ema21_1w_val:,.0f})"
+                )
+
+    should_enter = (total_score >= ENTRY_SCORE_THRESHOLD) and not hard_blocks
+
+    report = {
+        "should_enter": should_enter,
+        "direction":    "SHORT",
+        "total_score":  total_score,
+        "hard_blocks":  hard_blocks,
+        "layers": {
+            "L1_volatility":    {"pass": l1.get("pass", False),  "score": l1_score,  **l1},
+            "L2_trend":         {"pass": l2.get("pass", False),  "score": l2_score,  **l2},
+            "L3_momentum":      {"pass": l3.get("pass", False),  "score": l3_score,  **l3},
+            "L4_vol_trend":     {"pass": l4.get("pass", False),  "score": l4_score,  **l4},
+            "L5_liquidity":     {"pass": l5.get("pass", False),  "score": l5_score,  **l5},
+            "L6_risk_reward":   {"pass": l6.get("pass", False),  "score": l6_score,  **l6},
+            "L7_news":          {"pass": l7.get("pass", False),  "score": l7_score,  **l7},
+            "L8_sr_proximity":  {"pass": l8.get("pass", False),  "score": l8_score,  **l8},
+            "L9_candle_pattern":{"pass": l9.get("pass", False),  "score": l9_score,  **l9},
+            "L10_pressure":     {"pass": l10.get("pass", False), "score": l10_score, **l10},
+        },
+        "supplementary": {
+            "funding":    supp_funding,
+            "fear_greed": supp_fg,
+        },
     }
     return should_enter, report

@@ -370,25 +370,27 @@ def _layer_block_stats(trades: list) -> dict:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def compute_patterns(symbol: str, days: Optional[int] = None) -> dict:
+def compute_patterns(symbol: str, days: Optional[int] = None,
+                     direction: str = "LONG") -> dict:
     """
-    Load trades from SQLite, compute all patterns, cache in Redis.
-    Returns patterns dict.
+    Load trades from SQLite for symbol+direction, compute all patterns,
+    cache in Redis. Returns patterns dict.
     """
-    cache_key = f"patterns:{symbol}:{days or 'all'}"
+    cache_key = f"patterns:{symbol}:{direction}:{days or 'all'}"
     cached = cache_get(cache_key)
     if cached:
         logger.debug("Patterns from cache: %s", cache_key)
         return cached
 
-    trades = get_trades(symbol, days)
+    trades = get_trades(symbol, days, direction=direction)
     if not trades:
-        return {"error": "no_trades", "symbol": symbol}
+        return {"error": "no_trades", "symbol": symbol, "direction": direction}
 
     wr_overall, total = _win_rate(trades)
 
     patterns = {
         "symbol":       symbol,
+        "direction":    direction,
         "total_trades": total,
         "overall_wr":   wr_overall,
         **_by_hour(trades),

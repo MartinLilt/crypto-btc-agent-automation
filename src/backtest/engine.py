@@ -523,6 +523,7 @@ def _run_window_loop(
 
         trades_raw.append({
             "symbol":        symbol,
+            "direction":     "LONG",
             "entry_time":    snapshot["entry_time"],
             "entry_price":   outcome["entry_price"],
             "weekday":       snapshot["weekday"],
@@ -586,6 +587,7 @@ def run_backtest(
     if save_db:
         run_meta = {
             "symbol":        symbol,
+            "direction":     "LONG",
             "interval":      interval,
             "days":          days,
             "tp_pct":        tp_pct,
@@ -645,6 +647,7 @@ def run_backtest_research(
 
             results.append({
                 "symbol":    symbol,
+                "direction": "LONG",
                 "days":      days,
                 "tp_pct":    tp_pct,
                 "sl_pct":    sl_pct,
@@ -869,3 +872,99 @@ def _run_window_loop_short(symbol: str, candles: list,
             "l10_buy_ratio": snapshot["l10"].get("buy_ratio_pct"),
         })
     return trades_raw, total_candles
+
+
+def run_backtest_short(
+    symbol: str,
+    days: int,
+    tp_pct: float = 2.0,
+    sl_pct: float = 1.0,
+    interval: str = "1h",
+    save_db: bool = True,
+) -> dict:
+    """Mirror of run_backtest for the SHORT direction."""
+    init_db()
+    logger.info("Starting SHORT backtest: %s %dd TP=%.1f%% SL=%.1f%%",
+                symbol, days, tp_pct, sl_pct)
+
+    candles = _fetch_candles_full(symbol, days, interval)
+    candles_4h = _fetch_candles_full(symbol, days, "4h") if interval == "1h" else None
+    trades_raw, total_candles = _run_window_loop_short(
+        symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h)
+
+    stats = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
+
+    run_id = 0
+    if save_db:
+        run_meta = {
+            "symbol":        symbol,
+            "direction":     "SHORT",
+            "interval":      interval,
+            "days":          days,
+            "tp_pct":        tp_pct,
+            "sl_pct":        sl_pct,
+            "total_candles": total_candles,
+            **stats,
+        }
+        run_id = save_backtest_run(run_meta)
+        save_backtest_trades(run_id, trades_raw)
+
+    logger.info(
+        "SHORT backtest done: %d signals, WR=%.1f%%, P&L=%.2f%%",
+        stats["total_signals"], stats["win_rate_pct"], stats["total_pnl_pct"],
+    )
+
+    return {
+        "run_id": run_id,
+        "symbol": symbol,
+        "direction": "SHORT",
+        "days":   days,
+        "tp_pct": tp_pct,
+        "sl_pct": sl_pct,
+        "trades": trades_raw,
+        "stats":  stats,
+        **stats,
+    }
+
+
+def run_backtest_research_short(
+    symbol: str,
+    interval: str = "1h",
+) -> list[dict]:
+    """Mirror of run_backtest_research for the SHORT direction."""
+    init_db()
+    max_days = max(RESEARCH_PERIODS)
+    logger.info("SHORT Research: fetching %dd candles for %s", max_days, symbol)
+    candles_full = _fetch_candles_full(symbol, max_days, interval)
+    candles_4h_full = _fetch_candles_full(symbol, max_days, "4h") if interval == "1h" else None
+
+    results = []
+    for days in RESEARCH_PERIODS:
+        needed   = days * 24 + WARMUP_CANDLES
+        candles  = candles_full[-needed:] if len(candles_full) >= needed else candles_full
+
+        for tp_pct, sl_pct in RESEARCH_TP_SL:
+            trades_raw, total_candles = _run_window_loop_short(
+                symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h_full)
+            stats     = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
+            date_from = trades_raw[0]["entry_time"][:10]  if trades_raw else "—"
+            date_to   = trades_raw[-1]["entry_time"][:10] if trades_raw else "—"
+
+            results.append({
+                "symbol":    symbol,
+                "direction": "SHORT",
+                "days":      days,
+                "tp_pct":    tp_pct,
+                "sl_pct":    sl_pct,
+                "date_from": date_from,
+                "date_to":   date_to,
+                **stats,
+            })
+            logger.info(
+                "SHORT Research %s TP=%.1f SL=%.2f %dd → WR=%.1f%% net_pct=%.2f%%",
+                symbol, tp_pct, sl_pct, days,
+                stats["win_rate_pct"], stats["total_pnl_after_tax_pct"],
+            )
+
+    results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
+    return results
