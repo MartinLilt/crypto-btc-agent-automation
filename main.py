@@ -1493,10 +1493,55 @@ async def wf_direction_chosen(update: Update,
 
 # ── Paper dashboard ───────────────────────────────────────────────────────────
 
+def _migrate_paper_config(cfg: dict | None) -> dict | None:
+    """Normalise legacy single-strategy `paper_config` into the multi-strategy
+    shape: {active, strategies: [...], notify_chat_id, started_at}.
+    Old shape: {active, symbol, direction, tp_pct, sl_pct, days, expected_wr,
+    expected_net, started_at, started_by}.
+    """
+    if not cfg:
+        return cfg
+    if "strategies" in cfg:
+        return cfg
+    if "symbol" not in cfg:
+        return cfg
+    return {
+        "active": cfg.get("active", False),
+        "strategies": [{
+            "symbol":       cfg["symbol"],
+            "direction":    (cfg.get("direction") or "LONG").upper(),
+            "tp_pct":       cfg["tp_pct"],
+            "sl_pct":       cfg["sl_pct"],
+            "days":         cfg.get("days"),
+            "expected_wr":  cfg.get("expected_wr"),
+            "expected_net": cfg.get("expected_net"),
+        }],
+        "notify_chat_id": cfg.get("started_by"),
+        "started_at":     cfg.get("started_at"),
+    }
+
+
+def _format_active_strategies(cfg: dict, lang: str) -> str:
+    """One-line-per-strategy summary for the dashboard header."""
+    label = "🟢 *Active*:" if lang == "en" else "🟢 *Активно*:"
+    out = [label]
+    for s in cfg.get("strategies", []):
+        dir_emoji = "📉" if s["direction"] == "SHORT" else "📈"
+        out.append(
+            f"  {dir_emoji} `{s['symbol']}` {s['direction']} "
+            f"TP {s['tp_pct']}% / SL {s['sl_pct']}%"
+        )
+    return "\n".join(out)
+
+
 def _paper_config(context) -> dict | None:
-    """Read active paper-trading config from bot_data (None if not active)."""
-    cfg = context.application.bot_data.get("paper_config")
-    if cfg and cfg.get("active"):
+    """Read active paper-trading config from bot_data (None if not active).
+    Migrates legacy single-strategy shape on read."""
+    raw = context.application.bot_data.get("paper_config")
+    cfg = _migrate_paper_config(raw)
+    if raw is not cfg and cfg is not None:
+        context.application.bot_data["paper_config"] = cfg
+    if cfg and cfg.get("active") and cfg.get("strategies"):
         return cfg
     return None
 
@@ -1528,15 +1573,7 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
         ])
         empty_msg = t("paper_dashboard_empty", lang)
         if active_cfg:
-            dir_lbl = (active_cfg.get("direction") or "LONG").upper()
-            cfg_line = (
-                f"\n\n🟢 *Active*: `{active_cfg['symbol']}` {dir_lbl} "
-                f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
-                if lang == "en" else
-                f"\n\n🟢 *Активно*: `{active_cfg['symbol']}` {dir_lbl} "
-                f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
-            )
-            empty_msg = empty_msg + cfg_line
+            empty_msg = empty_msg + "\n\n" + _format_active_strategies(active_cfg, lang)
         await query.edit_message_text(
             empty_msg, parse_mode="Markdown", reply_markup=keyboard,
         )
@@ -1613,15 +1650,7 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
         msg = msg[:4087] + "…"
 
     if active_cfg:
-        dir_lbl = (active_cfg.get("direction") or "LONG").upper()
-        cfg_line = (
-            f"\n🟢 *Active*: `{active_cfg['symbol']}` {dir_lbl} "
-            f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
-            if lang == "en" else
-            f"\n🟢 *Активно*: `{active_cfg['symbol']}` {dir_lbl} "
-            f"TP {active_cfg['tp_pct']}% / SL {active_cfg['sl_pct']}%"
-        )
-        lines.insert(1, cfg_line)
+        lines.insert(1, "\n" + _format_active_strategies(active_cfg, lang))
 
     keyboard = InlineKeyboardMarkup([
         action_row,
@@ -1839,11 +1868,24 @@ async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["ps_candidates"] = candidates
+    context.user_data["ps_selected"] = []          # indices into candidates
+    await _render_strategy_picker(query, context, lang)
+    return
+
+
+def _render_strategy_picker(query, context, lang: str):
+    """Render the multi-select strategy picker. Tap medals to toggle, then
+    'Activate selected' to commit. Returns coroutine to await on caller."""
+    candidates = context.user_data.get("ps_candidates", [])
+    selected = set(context.user_data.get("ps_selected", []))
+    direction = (context.user_data.get("ps_direction") or "LONG").upper()
+    directions_to_research = (["LONG", "SHORT"] if direction == "BOTH"
+                              else [direction])
 
     medals = ["🥇", "🥈", "🥉"]
     lines = [t("ps_top3_header", lang)]
     rows = []
-    # Group by direction in display
+
     cursor = 0
     for dir_name in directions_to_research:
         dir_label = t(f"label_direction_{dir_name.lower()}", lang)
@@ -1854,22 +1896,27 @@ async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"\n*{dir_label}*")
         for i, r in enumerate(per_dir):
             global_idx = cursor + i
+            mark = "✅" if global_idx in selected else "◻️"
             lines.append(
-                f"{medals[i]} *{r['symbol']}* TP {_fmt_pct(r['tp_pct'])}% "
+                f"{mark} {medals[i]} *{r['symbol']}* TP {_fmt_pct(r['tp_pct'])}% "
                 f"/ SL {_fmt_pct(r['sl_pct'])}%\n"
                 f"   WR {r['wr_pct']:.1f}%  ·  Net {r['net_pct']:+.2f}%  "
                 f"·  Sharpe {r['sharpe']:.1f}  ·  {r['n_signals']} signals"
             )
-            btn_label = (f"{medals[i]} {dir_label} {r['symbol']} "
+            btn_label = (f"{mark} {medals[i]} {dir_label} {r['symbol']} "
                          f"TP{_fmt_pct(r['tp_pct'])}/SL{_fmt_pct(r['sl_pct'])}")
             rows.append([InlineKeyboardButton(
                 btn_label, callback_data=f"ps_pick_{global_idx}")])
         cursor += len(per_dir)
 
     rows.append([InlineKeyboardButton(
+        t("btn_paper_activate", lang),
+        callback_data="ps_activate")])
+    rows.append([InlineKeyboardButton(
         "⬅️ " + ("Back" if lang == "en" else "Назад"),
         callback_data="ps_setup")])
-    await query.edit_message_text(
+
+    return query.edit_message_text(
         "\n\n".join(lines),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows),
@@ -1877,7 +1924,7 @@ async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ps_strategy_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User picked one of the top-3 strategies — activate paper trading."""
+    """Toggle a strategy in/out of the multi-select list, then re-render."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
@@ -1886,33 +1933,74 @@ async def ps_strategy_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if idx >= len(candidates):
         await query.answer("Stale selection — start over.", show_alert=True)
         return
-    chosen = candidates[idx]
+    selected = list(context.user_data.get("ps_selected", []))
+    if idx in selected:
+        selected.remove(idx)
+    else:
+        selected.append(idx)
+    context.user_data["ps_selected"] = selected
+    await _render_strategy_picker(query, context, lang)
+
+
+async def ps_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Commit the selected strategies → save to bot_data, schedule tick."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+
+    candidates = context.user_data.get("ps_candidates", [])
+    selected_idx = context.user_data.get("ps_selected", []) or []
+    if not selected_idx:
+        await query.answer(t("ps_no_selection", lang), show_alert=True)
+        return
+
+    # De-dup by (symbol, direction): keep first (highest WR — list was sorted)
+    seen_keys: set[tuple[str, str]] = set()
+    strategies: list[dict] = []
+    for i in selected_idx:
+        if i >= len(candidates):
+            continue
+        c = candidates[i]
+        key = (c["symbol"], (c.get("direction") or "LONG").upper())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        strategies.append({
+            "symbol":       c["symbol"],
+            "direction":    key[1],
+            "tp_pct":       c["tp_pct"],
+            "sl_pct":       c["sl_pct"],
+            "days":         c.get("days"),
+            "expected_wr":  c["wr_pct"],
+            "expected_net": c["net_pct"],
+        })
 
     cfg = {
-        "active": True,
-        "symbol": chosen["symbol"],
-        "direction": (chosen.get("direction") or "LONG").upper(),
-        "tp_pct": chosen["tp_pct"],
-        "sl_pct": chosen["sl_pct"],
-        "days":   chosen["days"],
-        "expected_wr": chosen["wr_pct"],
-        "expected_net": chosen["net_pct"],
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "started_by": query.from_user.id if query.from_user else None,
+        "active":         True,
+        "strategies":     strategies,
+        "notify_chat_id": query.from_user.id if query.from_user else None,
+        "started_at":     datetime.now(timezone.utc).isoformat(),
     }
     context.application.bot_data["paper_config"] = cfg
-
-    # Schedule the JobQueue tick (idempotent)
     _schedule_paper_job(context.application)
+
+    # Render summary
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [t("ps_started_multi_header", lang, n=len(strategies))]
+    for i, s in enumerate(strategies):
+        dir_lbl = t(f"label_direction_{s['direction'].lower()}", lang)
+        m = medals[i] if i < 3 else "·"
+        lines.append(
+            f"{m} {dir_lbl} *{s['symbol']}* TP {_fmt_pct(s['tp_pct'])}% "
+            f"/ SL {_fmt_pct(s['sl_pct'])}%  ·  expected WR {s['expected_wr']:.1f}%"
+        )
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(t("btn_research_paper", lang),
                               callback_data="res_paper")],
     ])
     await query.edit_message_text(
-        t("ps_started", lang, symbol=chosen["symbol"],
-          tp=_fmt_pct(chosen["tp_pct"]), sl=_fmt_pct(chosen["sl_pct"]),
-          wr=chosen["wr_pct"], net=chosen["net_pct"], days=chosen["days"]),
+        "\n".join(lines),
         parse_mode="Markdown",
         reply_markup=keyboard,
     )
@@ -1964,25 +2052,88 @@ def _cancel_paper_job(app):
 
 
 async def _paper_log_tick(context):
-    """Hourly tick: read config, call paper_log.run_once with those params."""
-    cfg = context.application.bot_data.get("paper_config")
-    if not cfg or not cfg.get("active"):
+    """Hourly tick: iterate every strategy in paper_config, run paper_log.run_once
+    for each, then push consolidated open/close notifications to the per-user
+    notify_chat_id (captured when the wizard activated)."""
+    raw = context.application.bot_data.get("paper_config")
+    cfg = _migrate_paper_config(raw)
+    if raw is not cfg and cfg is not None:
+        context.application.bot_data["paper_config"] = cfg
+    if not cfg or not cfg.get("active") or not cfg.get("strategies"):
         return
+
+    notify_chat = cfg.get("notify_chat_id")
+    aggregate_opened: list[dict] = []
+    aggregate_closed: list[dict] = []
+
+    for s in cfg["strategies"]:
+        try:
+            from scripts.paper_log import run_once
+            loop = asyncio.get_event_loop()
+            res = await loop.run_in_executor(
+                None,
+                lambda s=s: run_once(
+                    assets=[s["symbol"]],
+                    tp_pct=s["tp_pct"],
+                    sl_pct=s["sl_pct"],
+                    direction=s["direction"],
+                    notify_inline=False,
+                ),
+            )
+            aggregate_opened.extend(res.get("opened", []))
+            aggregate_closed.extend(res.get("closed", []))
+            logger.info("Paper tick %s/%s: opened=%d closed=%d",
+                        s["symbol"], s["direction"],
+                        res.get("opened_count", 0), res.get("closed_count", 0))
+        except Exception:
+            logger.exception("Paper tick failed for %s/%s",
+                             s.get("symbol"), s.get("direction"))
+
+    if notify_chat:
+        for ev in aggregate_closed:
+            await _push_paper_close(context.bot, notify_chat, ev)
+        for ev in aggregate_opened:
+            await _push_paper_open(context.bot, notify_chat, ev)
+
+
+async def _push_paper_open(bot, chat_id: int, ev: dict):
+    """Send an opened-trade Telegram push for a single event."""
+    direction = ev["direction"]
+    dir_emoji = "📉" if direction == "SHORT" else "📈"
+    tp_label = f"-{ev['tp_pct']}%" if direction == "SHORT" else f"+{ev['tp_pct']}%"
+    sl_label = f"+{ev['sl_pct']}%" if direction == "SHORT" else f"-{ev['sl_pct']}%"
+    text = (
+        f"📊 <b>Paper trade #{ev['trade_id']} opened</b>\n"
+        f"Asset: <code>{ev['symbol']}</code> {dir_emoji} {direction}\n"
+        f"Entry: ${ev['entry_price']:.2f}\n"
+        f"TP: ${ev['tp_price']:.2f} ({tp_label})\n"
+        f"SL: ${ev['sl_price']:.2f} ({sl_label})\n"
+        f"Score: {ev['score']}/100"
+    )
     try:
-        from scripts.paper_log import run_once
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: run_once(
-                assets=[cfg["symbol"]],
-                tp_pct=cfg["tp_pct"],
-                sl_pct=cfg["sl_pct"],
-                direction=cfg.get("direction", "LONG"),
-            ),
-        )
-        logger.info("Paper tick: %s", result)
-    except Exception:
-        logger.exception("Paper tick failed")
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning("Paper-open push failed for chat %s: %s", chat_id, e)
+
+
+async def _push_paper_close(bot, chat_id: int, ev: dict):
+    """Send a closed-trade Telegram push for a single event."""
+    direction = ev["direction"]
+    dir_emoji = "📉" if direction == "SHORT" else "📈"
+    status_emoji = ("✅" if ev["status"] == "TP_HIT"
+                    else "❌" if ev["status"] == "SL_HIT" else "⏰")
+    text = (
+        f"{status_emoji} <b>Paper trade #{ev['trade_id']} closed</b>\n"
+        f"Asset: <code>{ev['symbol']}</code> {dir_emoji} {direction}\n"
+        f"Status: {ev['status']}\n"
+        f"P&L: <b>{ev['pnl_pct_net_fees']:+.2f}%</b> (after 0.2% fees)\n"
+        f"Hold: {ev['hold_hours']}h\n"
+        f"Entry: ${ev['entry_price']:.2f} → Exit: ${ev['exit_price']:.2f}"
+    )
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning("Paper-close push failed for chat %s: %s", chat_id, e)
 
 
 # ── /mode command ─────────────────────────────────────────────────────────────
@@ -2127,12 +2278,17 @@ async def post_init(app):
     asyncio.create_task(watcher_loop(app))
     logger.info("Monitor loops started")
 
-    # Resume paper-trading job if it was active before restart
-    cfg = app.bot_data.get("paper_config")
-    if cfg and cfg.get("active"):
+    # Resume paper-trading job if it was active before restart (migrate
+    # legacy single-strategy shape if present)
+    raw = app.bot_data.get("paper_config")
+    cfg = _migrate_paper_config(raw)
+    if raw is not cfg and cfg is not None:
+        app.bot_data["paper_config"] = cfg
+    if cfg and cfg.get("active") and cfg.get("strategies"):
         _schedule_paper_job(app)
-        logger.info("Resumed paper-trading job for %s TP=%s SL=%s",
-                    cfg.get("symbol"), cfg.get("tp_pct"), cfg.get("sl_pct"))
+        n = len(cfg["strategies"])
+        logger.info("Resumed paper-trading job: %d strateg%s",
+                    n, "y" if n == 1 else "ies")
 
 
 def main():
@@ -2170,6 +2326,7 @@ def main():
     app.add_handler(CallbackQueryHandler(ps_direction_chosen, pattern="^psdir_"))
     app.add_handler(CallbackQueryHandler(ps_period_chosen, pattern="^ps_period_"))
     app.add_handler(CallbackQueryHandler(ps_strategy_chosen, pattern="^ps_pick_"))
+    app.add_handler(CallbackQueryHandler(ps_activate, pattern="^ps_activate$"))
     app.add_handler(CallbackQueryHandler(ps_stop, pattern="^ps_stop$"))
     # Research-grid + Walk-forward + Patterns: asset → direction → run
     app.add_handler(CallbackQueryHandler(

@@ -642,6 +642,18 @@ STRINGS = {
         "en": "*Step 2*: pick direction(s) to paper-trade:",
         "ru": "*Шаг 2*: выбери направление(я) для paper trading:",
     },
+    "btn_paper_activate": {
+        "en": "✅ Activate selected",
+        "ru": "✅ Активировать выбранные",
+    },
+    "ps_no_selection": {
+        "en": "Pick at least one strategy first.",
+        "ru": "Сначала выбери хотя бы одну стратегию.",
+    },
+    "ps_started_multi_header": {
+        "en": "✅ *Paper trading started — {n} strategies. Pushes will arrive in this chat.*\n",
+        "ru": "✅ *Paper-trading запущен — {n} стратегий. Уведомления будут приходить в этот чат.*\n",
+    },
 }
 
 

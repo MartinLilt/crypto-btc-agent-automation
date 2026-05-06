@@ -224,16 +224,20 @@ def _check_for_signal(symbol: str, candles: list,
 def run_once(assets: list[str] | None = None,
              tp_pct: float | None = None,
              sl_pct: float | None = None,
-             direction: str = "LONG") -> dict:
+             direction: str = "LONG",
+             notify_inline: bool = True) -> dict:
     """
     One iteration of paper-trading: update open trades, evaluate new signals,
-    open trades on hits. Returns summary dict.
+    open trades on hits.
 
     direction: 'LONG', 'SHORT', or 'BOTH'. When BOTH, both directions are scanned
     independently — long and short positions can coexist for the same symbol.
+    notify_inline: send Telegram push via env-configured chat (CLI mode). The bot
+    sets this to False so it can deliver pushes to the per-user chat_id stored in
+    paper_config.
 
-    Importable from the bot: just pass desired assets, TP/SL, and direction.
-    Falls back to module-level defaults (env-driven) when args are None.
+    Returns dict with `opened_count`, `closed_count`, `opened`, `closed` (full
+    trade dicts). Counts kept for backward compat.
     """
     use_assets = assets if assets else ASSETS
     use_tp = tp_pct if tp_pct is not None else TP_PCT
@@ -242,6 +246,8 @@ def run_once(assets: list[str] | None = None,
     if direction not in ("LONG", "SHORT", "BOTH"):
         raise ValueError(f"direction must be LONG/SHORT/BOTH, got {direction!r}")
     directions_to_scan = ["LONG", "SHORT"] if direction == "BOTH" else [direction]
+    opened_events: list[dict] = []
+    closed_events: list[dict] = []
 
     init_db()
 
@@ -285,18 +291,30 @@ def run_once(assets: list[str] | None = None,
             logger.info("CLOSED #%d %s %s %s: %.2f%% (%dh)",
                         trade["id"], symbol, trade_dir, outcome["status"],
                         outcome["pnl_pct_net_fees"], outcome["hold_hours"])
-            emoji = "✅" if outcome["status"] == "TP_HIT" else "❌" if outcome["status"] == "SL_HIT" else "⏰"
-            dir_emoji = "📉" if trade_dir == "SHORT" else "📈"
-            sent = notify(
-                f"{emoji} <b>Paper trade #{trade['id']} closed</b>\n"
-                f"Asset: <code>{symbol}</code> {dir_emoji} {trade_dir}\n"
-                f"Status: {outcome['status']}\n"
-                f"P&L: <b>{outcome['pnl_pct_net_fees']:+.2f}%</b> (after 0.2% fees)\n"
-                f"Hold: {outcome['hold_hours']}h\n"
-                f"Entry: ${trade['entry_price']:.2f} → Exit: ${outcome['exit_price']:.2f}"
-            )
-            if sent:
-                mark_paper_notified(trade["id"], "close")
+            event = {
+                "trade_id":  trade["id"],
+                "symbol":    symbol,
+                "direction": trade_dir,
+                "status":    outcome["status"],
+                "entry_price": trade["entry_price"],
+                "exit_price":  outcome["exit_price"],
+                "pnl_pct_net_fees": outcome["pnl_pct_net_fees"],
+                "hold_hours":  outcome["hold_hours"],
+            }
+            closed_events.append(event)
+            if notify_inline:
+                emoji = "✅" if outcome["status"] == "TP_HIT" else "❌" if outcome["status"] == "SL_HIT" else "⏰"
+                dir_emoji = "📉" if trade_dir == "SHORT" else "📈"
+                sent = notify(
+                    f"{emoji} <b>Paper trade #{trade['id']} closed</b>\n"
+                    f"Asset: <code>{symbol}</code> {dir_emoji} {trade_dir}\n"
+                    f"Status: {outcome['status']}\n"
+                    f"P&L: <b>{outcome['pnl_pct_net_fees']:+.2f}%</b> (after 0.2% fees)\n"
+                    f"Hold: {outcome['hold_hours']}h\n"
+                    f"Entry: ${trade['entry_price']:.2f} → Exit: ${outcome['exit_price']:.2f}"
+                )
+                if sent:
+                    mark_paper_notified(trade["id"], "close")
 
     # 2. Look for new signals — per asset × direction
     for symbol in use_assets:
@@ -322,23 +340,42 @@ def run_once(assets: list[str] | None = None,
             logger.info("OPENED #%d %s %s @ $%.2f (TP $%.2f, SL $%.2f)",
                         trade_id, symbol, dir_name, signal["entry_price"],
                         signal["tp_price"], signal["sl_price"])
-            tp_label = f"-{use_tp}%" if dir_name == "SHORT" else f"+{use_tp}%"
-            sl_label = f"+{use_sl}%" if dir_name == "SHORT" else f"-{use_sl}%"
-            dir_emoji = "📉" if dir_name == "SHORT" else "📈"
-            sent = notify(
-                f"📊 <b>Paper trade #{trade_id} opened</b>\n"
-                f"Asset: <code>{symbol}</code> {dir_emoji} {dir_name}\n"
-                f"Entry: ${signal['entry_price']:.2f}\n"
-                f"TP: ${signal['tp_price']:.2f} ({tp_label})\n"
-                f"SL: ${signal['sl_price']:.2f} ({sl_label})\n"
-                f"Score: {signal['total_score']}/100"
-            )
-            if sent:
-                mark_paper_notified(trade_id, "open")
+            event = {
+                "trade_id":    trade_id,
+                "symbol":      symbol,
+                "direction":   dir_name,
+                "entry_price": signal["entry_price"],
+                "tp_price":    signal["tp_price"],
+                "sl_price":    signal["sl_price"],
+                "tp_pct":      use_tp,
+                "sl_pct":      use_sl,
+                "score":       signal["total_score"],
+            }
+            opened_events.append(event)
+            if notify_inline:
+                tp_label = f"-{use_tp}%" if dir_name == "SHORT" else f"+{use_tp}%"
+                sl_label = f"+{use_sl}%" if dir_name == "SHORT" else f"-{use_sl}%"
+                dir_emoji = "📉" if dir_name == "SHORT" else "📈"
+                sent = notify(
+                    f"📊 <b>Paper trade #{trade_id} opened</b>\n"
+                    f"Asset: <code>{symbol}</code> {dir_emoji} {dir_name}\n"
+                    f"Entry: ${signal['entry_price']:.2f}\n"
+                    f"TP: ${signal['tp_price']:.2f} ({tp_label})\n"
+                    f"SL: ${signal['sl_price']:.2f} ({sl_label})\n"
+                    f"Score: {signal['total_score']}/100"
+                )
+                if sent:
+                    mark_paper_notified(trade_id, "open")
 
     logger.info("Run complete (%s): %d opened, %d closed",
                 direction, opened_count, closed_count)
-    return {"opened": opened_count, "closed": closed_count, "direction": direction}
+    return {
+        "opened_count": opened_count,
+        "closed_count": closed_count,
+        "opened":       opened_events,
+        "closed":       closed_events,
+        "direction":    direction,
+    }
 
 
 def main() -> int:
