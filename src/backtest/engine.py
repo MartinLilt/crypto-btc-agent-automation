@@ -19,7 +19,7 @@ import logging
 import math
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -39,12 +39,10 @@ from src.signals.indicators import (
     is_downtrend,
     is_volume_trending,
     check_sell_pressure,
-    GOOD_HOURS_UTC,
-    SKIP_WEEKDAYS,
+    calculate_ema,
     ENTRY_SCORE_THRESHOLD,
     _score_l1,
     _score_l5,
-    _score_l10,
 )
 from src.signals.support_resistance import check_sr_proximity, check_sr_proximity_short
 from src.signals.candle_patterns import detect_candle_patterns
@@ -117,86 +115,17 @@ def _fetch_candles_full(symbol: str, days: int, interval: str = "1h") -> list:
     return all_candles[-needed:]        # trim to exactly what we need
 
 
-def _fetch_fear_greed_history() -> dict:
-    """
-    Download full F&G history (up to 365 days) → {YYYY-MM-DD: int_value}.
-    Cached in Redis.
-    """
-    cached = get_fear_greed_for_date("_meta")  # sentinel key
-    if cached:
-        from src.data.db import cache_get
-        return cache_get("fg:history") or {}
-
-    try:
-        # No date_format param → API returns unix timestamps (integers)
-        url = _FEAR_GREED_URL.split("?")[0] + "?limit=365"
-        resp = requests.get(url, timeout=10)
-        data = resp.json().get("data", [])
-        history = {}
-        for item in data:
-            raw_ts = item["timestamp"]
-            # API returns unix timestamp as string, e.g. "1711497600"
-            ts = int(raw_ts)
-            date_str = datetime.fromtimestamp(
-                ts, tz=timezone.utc).strftime("%Y-%m-%d")
-            history[date_str] = int(item["value"])
-        history["_meta"] = 1            # sentinel so we know it's loaded
-        cache_fear_greed_history(history)
-        logger.info("Loaded F&G history: %d dates", len(history) - 1)
-        return history
-    except Exception as e:
-        logger.warning("F&G history fetch failed: %s", e)
-        return {}
-
-
-def _fetch_funding_history(symbol: str) -> list:
-    """
-    Download funding rate history from Binance Futures.
-    Returns list of {timestamp: str, rate: float} or [] for spot-only assets.
-    Cached in Redis.
-    """
-    from src.data.db import cache_get
-    cached = cache_get(f"funding:{symbol}:history")
-    if cached:
-        return cached
-
-    try:
-        url = f"{_BINANCE_FUTURES}/fapi/v1/fundingRate"
-        resp = requests.get(
-            url,
-            params={"symbol": symbol, "limit": 1000},
-            timeout=10,
-        )
-        data = resp.json()
-        if isinstance(data, dict):      # error response
-            return []
-        history = []
-        for item in data:
-            ts_ms = int(item["fundingTime"])
-            ts_str = datetime.fromtimestamp(
-                ts_ms / 1000, tz=timezone.utc).isoformat()
-            history.append({
-                "timestamp": ts_str,
-                "rate": float(item["fundingRate"]) * 100,
-            })
-        cache_funding_history(symbol, history)
-        logger.info("Loaded funding history for %s: %d records",
-                    symbol, len(history))
-        return history
-    except Exception as e:
-        logger.warning("Funding history fetch failed for %s: %s", symbol, e)
-        return []
-
-
 # ── 2. Per-bar layer evaluation ───────────────────────────────────────────────
 
 def _eval_bar(candles_window: list, ts_ms: int,
               tp_pct: float, sl_pct: float,
-              spread_approx: float, symbol: str,
-              candles_4h: list | None = None) -> tuple[bool, dict]:
+              symbol: str,
+              candles_4h: list | None = None,
+              candles_1d: list | None = None,
+              candles_1w: list | None = None) -> tuple[bool, dict]:
     """
     Run all layers on a window of candles ending at index i.
-    candles_4h is the slice of 4h candles available at ts_ms (matches live behavior).
+    candles_4h / 1d / 1w are slices available at ts_ms (matches live behavior).
     Returns (signal: bool, layer_snapshot: dict)
     """
     # L1 — Volatility (score-based, relaxed ADX floor for backtest)
@@ -288,7 +217,13 @@ def _eval_bar(candles_window: list, ts_ms: int,
     adx_val = l1.get("adx", 0)
     adx_block = 25 <= adx_val < 40
 
-    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not adx_block
+    # Hard filters: daily / weekly trend alignment (matches live check_entry_signal)
+    daily_block = _daily_block_long(candles_1d)
+    weekly_block = _weekly_block_long(candles_1w)
+
+    all_pass = ((total_score >= ENTRY_SCORE_THRESHOLD)
+                and not rsi_block and not adx_block
+                and not daily_block and not weekly_block)
 
     snapshot = {
         "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
@@ -467,23 +402,63 @@ RESEARCH_TP_SL = [
 RESEARCH_PERIODS = [90, 180, 365]
 
 
-def _slice_4h_at(candles_4h: list, ts_ms: int, lookback: int = 210) -> list | None:
+def _slice_higher_tf_at(candles_tf: list, ts_ms: int, lookback: int = 210) -> list | None:
     """
-    Return the slice of 4h candles that would be available at ts_ms.
-    Mirrors what live mode sees: latest closed 4h candle plus prior history.
+    Return the slice of higher-timeframe candles available at ts_ms.
+    Works for any timeframe (4h, 1d, 1w) — caller passes appropriate lookback.
+    Mirrors what live mode sees at that moment: latest closed candle plus prior history.
     """
-    if not candles_4h:
+    if not candles_tf:
         return None
-    # Find latest 4h candle whose open_time_ms <= ts_ms (binary search via linear scan)
     latest_idx = -1
-    for j in range(len(candles_4h) - 1, -1, -1):
-        if candles_4h[j]["open_time_ms"] <= ts_ms:
+    for j in range(len(candles_tf) - 1, -1, -1):
+        if candles_tf[j]["open_time_ms"] <= ts_ms:
             latest_idx = j
             break
     if latest_idx < 0:
         return None
     start = max(0, latest_idx - lookback + 1)
-    return candles_4h[start:latest_idx + 1]
+    return candles_tf[start:latest_idx + 1]
+
+
+def _daily_block_long(candles_1d: list | None) -> bool:
+    """Return True if daily trend is bearish (price < EMA50d) — blocks LONG entries."""
+    if not candles_1d or len(candles_1d) < 50:
+        return False
+    ema = calculate_ema(candles_1d, 50)
+    if not ema:
+        return False
+    return candles_1d[-1]["close"] < ema[-1]
+
+
+def _weekly_block_long(candles_1w: list | None) -> bool:
+    """Return True if weekly trend is bearish (price < EMA21w) — blocks LONG entries."""
+    if not candles_1w or len(candles_1w) < 21:
+        return False
+    ema = calculate_ema(candles_1w, 21)
+    if not ema:
+        return False
+    return candles_1w[-1]["close"] < ema[-1]
+
+
+def _daily_block_short(candles_1d: list | None) -> bool:
+    """Return True if daily trend is bullish — blocks SHORT entries."""
+    if not candles_1d or len(candles_1d) < 50:
+        return False
+    ema = calculate_ema(candles_1d, 50)
+    if not ema:
+        return False
+    return candles_1d[-1]["close"] > ema[-1]
+
+
+def _weekly_block_short(candles_1w: list | None) -> bool:
+    """Return True if weekly trend is bullish — blocks SHORT entries."""
+    if not candles_1w or len(candles_1w) < 21:
+        return False
+    ema = calculate_ema(candles_1w, 21)
+    if not ema:
+        return False
+    return candles_1w[-1]["close"] > ema[-1]
 
 
 def _run_window_loop(
@@ -492,10 +467,12 @@ def _run_window_loop(
     tp_pct: float,
     sl_pct: float,
     candles_4h: list | None = None,
+    candles_1d: list | None = None,
+    candles_1w: list | None = None,
 ) -> tuple[list, int]:
     """
     Slide the signal window over candles and simulate trades.
-    candles_4h enables multi-timeframe confirmation (matches live behavior).
+    candles_4h / 1d / 1w enable multi-timeframe confirmation (matches live behavior).
     Returns (trades_raw, total_candles_evaluated).
     Shared by run_backtest and run_backtest_research.
     """
@@ -505,11 +482,15 @@ def _run_window_loop(
     for i in range(WARMUP_CANDLES, len(candles) - 1):
         window = candles[max(0, i - WARMUP_CANDLES):i + 1]
         ts_ms  = candles[i]["open_time_ms"]
-        slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
+        slice_4h = _slice_higher_tf_at(candles_4h, ts_ms, lookback=210) if candles_4h else None
+        slice_1d = _slice_higher_tf_at(candles_1d, ts_ms, lookback=60)  if candles_1d else None
+        slice_1w = _slice_higher_tf_at(candles_1w, ts_ms, lookback=30)  if candles_1w else None
 
         signal, snapshot = _eval_bar(
-            window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
+            window, ts_ms, tp_pct, sl_pct, symbol,
             candles_4h=slice_4h,
+            candles_1d=slice_1d,
+            candles_1w=slice_1w,
         )
         if not signal:
             continue
@@ -576,8 +557,11 @@ def run_backtest(
 
     candles = _fetch_candles_full(symbol, days, interval)
     candles_4h = _fetch_candles_full(symbol, days, "4h") if interval == "1h" else None
+    candles_1d = _fetch_candles_full(symbol, days, "1d") if interval == "1h" else None
+    candles_1w = _fetch_candles_full(symbol, days, "1w") if interval == "1h" else None
     trades_raw, total_candles = _run_window_loop(
-        symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h)
+        symbol, candles, tp_pct, sl_pct,
+        candles_4h=candles_4h, candles_1d=candles_1d, candles_1w=candles_1w)
 
     # Compute stats
     stats = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
@@ -632,6 +616,8 @@ def run_backtest_research(
     logger.info("Research: fetching %dd candles for %s", max_days, symbol)
     candles_full = _fetch_candles_full(symbol, max_days, interval)
     candles_4h_full = _fetch_candles_full(symbol, max_days, "4h") if interval == "1h" else None
+    candles_1d_full = _fetch_candles_full(symbol, max_days, "1d") if interval == "1h" else None
+    candles_1w_full = _fetch_candles_full(symbol, max_days, "1w") if interval == "1h" else None
 
     results = []
     for days in RESEARCH_PERIODS:
@@ -640,7 +626,10 @@ def run_backtest_research(
 
         for tp_pct, sl_pct in RESEARCH_TP_SL:
             trades_raw, total_candles = _run_window_loop(
-                symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h_full)
+                symbol, candles, tp_pct, sl_pct,
+                candles_4h=candles_4h_full,
+                candles_1d=candles_1d_full,
+                candles_1w=candles_1w_full)
             stats     = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
             date_from = trades_raw[0]["entry_time"][:10]  if trades_raw else "—"
             date_to   = trades_raw[-1]["entry_time"][:10] if trades_raw else "—"
@@ -674,8 +663,10 @@ def run_backtest_research(
 
 def _eval_bar_short(candles_window: list, ts_ms: int,
                     tp_pct: float, sl_pct: float,
-                    spread_approx: float, symbol: str,
-                    candles_4h: list | None = None) -> tuple[bool, dict]:
+                    symbol: str,
+                    candles_4h: list | None = None,
+                    candles_1d: list | None = None,
+                    candles_1w: list | None = None) -> tuple[bool, dict]:
     """Mirror of _eval_bar for short entries."""
     # L1 — Volatility (same; trends in both directions need volatility)
     l1_score, l1 = is_market_moving(candles_window)
@@ -754,7 +745,13 @@ def _eval_bar_short(candles_window: list, ts_ms: int,
     adx_val = l1.get("adx", 0)
     adx_block = 25 <= adx_val < 40
 
-    all_pass = (total_score >= ENTRY_SCORE_THRESHOLD) and not rsi_block and not adx_block
+    # Hard filters: daily / weekly trend alignment (inverted: shorts need bear)
+    daily_block = _daily_block_short(candles_1d)
+    weekly_block = _weekly_block_short(candles_1w)
+
+    all_pass = ((total_score >= ENTRY_SCORE_THRESHOLD)
+                and not rsi_block and not adx_block
+                and not daily_block and not weekly_block)
 
     snapshot = {
         "l1": l1, "l2": l2, "l3": l3, "l4": l4, "l5": l5,
@@ -829,23 +826,34 @@ def _simulate_trade_short(candles: list, entry_idx: int,
 
 def _run_window_loop_short(symbol: str, candles: list,
                             tp_pct: float, sl_pct: float,
-                            candles_4h: list | None = None) -> tuple[list, int]:
+                            candles_4h: list | None = None,
+                            candles_1d: list | None = None,
+                            candles_1w: list | None = None) -> tuple[list, int]:
     """Mirror of _run_window_loop for shorts."""
     total_candles = len(candles) - WARMUP_CANDLES
     trades_raw = []
     for i in range(WARMUP_CANDLES, len(candles) - 1):
         window = candles[max(0, i - WARMUP_CANDLES):i + 1]
         ts_ms  = candles[i]["open_time_ms"]
-        slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
+        slice_4h = _slice_higher_tf_at(candles_4h, ts_ms, lookback=210) if candles_4h else None
+        slice_1d = _slice_higher_tf_at(candles_1d, ts_ms, lookback=60)  if candles_1d else None
+        slice_1w = _slice_higher_tf_at(candles_1w, ts_ms, lookback=30)  if candles_1w else None
 
         signal, snapshot = _eval_bar_short(
-            window, ts_ms, tp_pct, sl_pct, 0.0, symbol, candles_4h=slice_4h)
+            window, ts_ms, tp_pct, sl_pct, symbol,
+            candles_4h=slice_4h,
+            candles_1d=slice_1d,
+            candles_1w=slice_1w,
+        )
         if not signal:
             continue
 
         outcome = _simulate_trade_short(candles, i, tp_pct, sl_pct)
         if outcome["result"] == "NO_DATA":
             continue
+
+        l1  = snapshot["l1"];  l2  = snapshot["l2"];  l3 = snapshot["l3"]
+        l8  = snapshot["l8"];  l9  = snapshot["l9"];  l10 = snapshot["l10"]
 
         trades_raw.append({
             "symbol":    symbol,
@@ -854,22 +862,29 @@ def _run_window_loop_short(symbol: str, candles: list,
             "entry_price": outcome["entry_price"],
             "weekday":   snapshot["weekday"],
             "hour_utc":  snapshot["hour_utc"],
-            "result":    outcome["result"],
-            "exit_price": outcome["exit_price"],
-            "exit_time":  outcome["exit_time"],
-            "pnl_pct":    outcome["pnl_pct"],
-            "pnl_pct_net_fees": outcome["pnl_pct_net_fees"],
-            "hold_hours":       outcome["hold_hours"],
-            "max_drawdown_pct": outcome["max_drawdown_pct"],
-            "total_score":      snapshot["total_score"],
-            "l1_atr":  snapshot["l1"].get("atr"),
-            "l1_adx":  snapshot["l1"].get("adx"),
-            "l2_ema50": snapshot["l2"].get("ema50"),
-            "l2_ema200": snapshot["l2"].get("ema200"),
-            "l2_gap_pct": snapshot["l2"].get("gap_pct"),
-            "l3_rsi": snapshot["l3"].get("rsi"),
-            "l3_macd_hist": snapshot["l3"].get("macd_hist"),
-            "l10_buy_ratio": snapshot["l10"].get("buy_ratio_pct"),
+            "l1_atr":        l1.get("atr"),
+            "l1_adx":        l1.get("adx"),
+            "l2_ema50":      l2.get("ema50"),
+            "l2_ema200":     l2.get("ema200"),
+            "l2_gap_pct":    l2.get("gap_pct"),
+            "l3_rsi":        l3.get("rsi"),
+            "l3_macd_hist":  l3.get("macd_hist"),
+            "l4_pass":       1,
+            "l5_spread_pct": snapshot["l5"].get("spread", 0) / candles[i]["close"] * 100,
+            "l6_rr_ratio":   snapshot["l6"].get("rr_ratio"),
+            "l8_funding":    l8.get("score"),       # column historically misnamed, holds L8 score
+            "l8_oi_chg":     l8.get("n_blockers", 0),
+            "l9_fg_value":   l9.get("score"),       # column historically misnamed, holds L9 score
+            "l10_buy_ratio": l10.get("buy_ratio_pct"),
+            "l10_net_vol":   l10.get("net_btc"),
+            "result":              outcome["result"],
+            "exit_price":          outcome["exit_price"],
+            "exit_time":           outcome["exit_time"],
+            "pnl_pct":             outcome["pnl_pct"],
+            "pnl_pct_net_fees":    outcome["pnl_pct_net_fees"],
+            "hold_hours":          outcome["hold_hours"],
+            "max_drawdown_pct":    outcome["max_drawdown_pct"],
+            "total_score":         snapshot["total_score"],
         })
     return trades_raw, total_candles
 
@@ -889,8 +904,11 @@ def run_backtest_short(
 
     candles = _fetch_candles_full(symbol, days, interval)
     candles_4h = _fetch_candles_full(symbol, days, "4h") if interval == "1h" else None
+    candles_1d = _fetch_candles_full(symbol, days, "1d") if interval == "1h" else None
+    candles_1w = _fetch_candles_full(symbol, days, "1w") if interval == "1h" else None
     trades_raw, total_candles = _run_window_loop_short(
-        symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h)
+        symbol, candles, tp_pct, sl_pct,
+        candles_4h=candles_4h, candles_1d=candles_1d, candles_1w=candles_1w)
 
     stats = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
 
@@ -937,6 +955,8 @@ def run_backtest_research_short(
     logger.info("SHORT Research: fetching %dd candles for %s", max_days, symbol)
     candles_full = _fetch_candles_full(symbol, max_days, interval)
     candles_4h_full = _fetch_candles_full(symbol, max_days, "4h") if interval == "1h" else None
+    candles_1d_full = _fetch_candles_full(symbol, max_days, "1d") if interval == "1h" else None
+    candles_1w_full = _fetch_candles_full(symbol, max_days, "1w") if interval == "1h" else None
 
     results = []
     for days in RESEARCH_PERIODS:
@@ -945,7 +965,10 @@ def run_backtest_research_short(
 
         for tp_pct, sl_pct in RESEARCH_TP_SL:
             trades_raw, total_candles = _run_window_loop_short(
-                symbol, candles, tp_pct, sl_pct, candles_4h=candles_4h_full)
+                symbol, candles, tp_pct, sl_pct,
+                candles_4h=candles_4h_full,
+                candles_1d=candles_1d_full,
+                candles_1w=candles_1w_full)
             stats     = _calc_stats(trades_raw, total_candles, tp_pct, sl_pct)
             date_from = trades_raw[0]["entry_time"][:10]  if trades_raw else "—"
             date_to   = trades_raw[-1]["entry_time"][:10] if trades_raw else "—"

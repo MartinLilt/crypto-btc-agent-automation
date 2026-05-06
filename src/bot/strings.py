@@ -581,8 +581,14 @@ STRINGS = {
 
     # ── Patterns ──────────────────────────────────────────────────────────────
     "pat_no_data": {
-        "en": "⚠️ No backtest data for *{symbol}*.\nRun `/backtest` first.",
-        "ru": "⚠️ Нет данных бэктеста для *{symbol}*.\nСначала запусти `/backtest`.",
+        "en": (
+            "⚠️ No backtest data for *{symbol}*.\n"
+            "Run `/backtest` first, or try the other direction (LONG ⇄ SHORT)."
+        ),
+        "ru": (
+            "⚠️ Нет данных бэктеста для *{symbol}*.\n"
+            "Сначала запусти `/backtest` — или попробуй другое направление (LONG ⇄ SHORT)."
+        ),
     },
     "btn_back_to_bt": {
         "en": "◀️ Back",
@@ -608,14 +614,14 @@ STRINGS = {
     },
     "short_disclaimer": {
         "en": (
-            "⚠️ *Heads up:* on the available 720-day data (mostly bull regime), "
-            "SHORT is net-negative on every asset (BTC ≈0%, SOL −36%, ETH −51%). "
-            "Useful for validating bear-regime behaviour."
+            "⚠️ *Heads up:* available historical data is dominated by a bull "
+            "regime, so SHORT performance has been net-negative across assets. "
+            "Useful for validating bear-regime behaviour — re-check stats per asset before trusting any short strategy."
         ),
         "ru": (
-            "⚠️ *Внимание:* на доступных 720д данных (в основном бычий режим) "
-            "SHORT убыточен по всем активам (BTC ≈0%, SOL −36%, ETH −51%). "
-            "Полезно для проверки поведения в bear-режиме."
+            "⚠️ *Внимание:* доступная история — в основном бычий режим, "
+            "поэтому SHORT исторически в минусе по всем активам. "
+            "Полезно для проверки поведения в bear-режиме — перед использованием посмотри свежие цифры по конкретному активу."
         ),
     },
     "label_direction_long": {

@@ -160,6 +160,8 @@ def _check_open_trade(trade: dict, candles: list) -> dict | None:
 def _check_for_signal(symbol: str, candles: list,
                        tp_pct: float, sl_pct: float,
                        candles_4h: list | None = None,
+                       candles_1d: list | None = None,
+                       candles_1w: list | None = None,
                        direction: str = "LONG") -> dict | None:
     """
     Run _eval_bar (or its short mirror) on the latest fully-closed candle.
@@ -169,18 +171,21 @@ def _check_for_signal(symbol: str, candles: list,
         logger.warning("%s: not enough candles (%d)", symbol, len(candles))
         return None
 
-    # Use second-to-last candle as the signal bar (last is in-progress)
     signal_idx = len(candles) - 2
     window = candles[max(0, signal_idx - WARMUP_CANDLES):signal_idx + 1]
     ts_ms = candles[signal_idx]["open_time_ms"]
 
-    from src.backtest.engine import _slice_4h_at
-    slice_4h = _slice_4h_at(candles_4h, ts_ms) if candles_4h else None
+    from src.backtest.engine import _slice_higher_tf_at
+    slice_4h = _slice_higher_tf_at(candles_4h, ts_ms, lookback=210) if candles_4h else None
+    slice_1d = _slice_higher_tf_at(candles_1d, ts_ms, lookback=60)  if candles_1d else None
+    slice_1w = _slice_higher_tf_at(candles_1w, ts_ms, lookback=30)  if candles_1w else None
 
     is_short = direction.upper() == "SHORT"
     eval_fn = _eval_bar_short if is_short else _eval_bar
-    fired, snapshot = eval_fn(window, ts_ms, tp_pct, sl_pct, 0.0, symbol,
-                              candles_4h=slice_4h)
+    fired, snapshot = eval_fn(window, ts_ms, tp_pct, sl_pct, symbol,
+                              candles_4h=slice_4h,
+                              candles_1d=slice_1d,
+                              candles_1w=slice_1w)
     if not fired:
         return None
 
@@ -240,13 +245,17 @@ def run_once(assets: list[str] | None = None,
 
     init_db()
 
-    # Fetch candles once per asset
+    # Fetch candles once per asset (1h + 4h + 1d + 1w for multi-TF hard blocks)
     candles_by_asset: dict[str, list] = {}
     candles_4h_by_asset: dict[str, list] = {}
+    candles_1d_by_asset: dict[str, list] = {}
+    candles_1w_by_asset: dict[str, list] = {}
     for symbol in use_assets:
         try:
-            candles_by_asset[symbol] = _fetch_candles_full(symbol, days=14)
-            candles_4h_by_asset[symbol] = _fetch_candles_full(symbol, days=60, interval="4h")
+            candles_by_asset[symbol]    = _fetch_candles_full(symbol, days=14)
+            candles_4h_by_asset[symbol] = _fetch_candles_full(symbol, days=60,  interval="4h")
+            candles_1d_by_asset[symbol] = _fetch_candles_full(symbol, days=120, interval="1d")
+            candles_1w_by_asset[symbol] = _fetch_candles_full(symbol, days=240, interval="1w")
         except Exception as e:
             logger.error("Fetch failed for %s: %s", symbol, e)
 
@@ -299,9 +308,13 @@ def run_once(assets: list[str] | None = None,
             if has_open_paper_trade(symbol, dir_name):
                 logger.info("%s %s: skipping (open trade exists)", symbol, dir_name)
                 continue
-            signal = _check_for_signal(symbol, candles, use_tp, use_sl,
-                                       candles_4h_by_asset.get(symbol),
-                                       direction=dir_name)
+            signal = _check_for_signal(
+                symbol, candles, use_tp, use_sl,
+                candles_4h=candles_4h_by_asset.get(symbol),
+                candles_1d=candles_1d_by_asset.get(symbol),
+                candles_1w=candles_1w_by_asset.get(symbol),
+                direction=dir_name,
+            )
             if not signal:
                 continue
             trade_id = open_paper_trade(signal)

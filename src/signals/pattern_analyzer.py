@@ -88,29 +88,32 @@ def _by_weekday(trades: list) -> dict:
     return {"best_days": best, "worst_days": worst}
 
 
-def _by_fg_band(trades: list) -> dict:
-    def fg_band(t):
+def _by_l9_score_band(trades: list) -> dict:
+    """L9 candle-pattern score bands (0-10). Column `l9_fg_value` historically
+    misnamed — engine writes the L9 score there, not Fear&Greed.
+    """
+    def band(t):
         v = t.get("l9_fg_value")
         if v is None:
             return None
-        if v <= 24:
-            return "Extreme Fear (0-24)"
-        if v <= 44:
-            return "Fear (25-44)"
-        if v <= 54:
-            return "Neutral (45-54)"
-        if v <= 74:
-            return "Greed (55-74)"
-        return "Extreme Greed (75-100)"
+        if v <= 2:
+            return "Weak (0-2)"
+        if v <= 4:
+            return "Below avg (3-4)"
+        if v <= 6:
+            return "Neutral (5-6)"
+        if v <= 8:
+            return "Strong (7-8)"
+        return "Top (9-10)"
 
-    groups = _group_by(trades, fg_band)
+    groups = _group_by(trades, band)
     result = []
     for label, group in groups.items():
         wr, size = _win_rate(group)
         if size >= MIN_SAMPLE:
             result.append({"band": label, "win_rate": wr, "sample": size})
     result.sort(key=lambda x: x["win_rate"], reverse=True)
-    return {"fg_bands": result}
+    return {"l9_score_bands": result}
 
 
 def _by_rsi_band(trades: list) -> dict:
@@ -144,29 +147,32 @@ def _by_rsi_band(trades: list) -> dict:
     return {"rsi_bands": result}
 
 
-def _by_funding_band(trades: list) -> dict:
-    def fund_band(t):
+def _by_l8_score_band(trades: list) -> dict:
+    """L8 S/R-proximity score bands (0-10). Column `l8_funding` historically
+    misnamed — engine writes the L8 score there, not funding rate.
+    """
+    def band(t):
         v = t.get("l8_funding")
         if v is None:
             return None
-        if v < -0.03:
-            return "Shorts squeezed (<-0.03%)"
-        if v < 0:
-            return "Negative (-0.03–0%)"
-        if v < 0.02:
-            return "Neutral (0–0.02%)"
-        if v < 0.05:
-            return "Elevated (0.02–0.05%)"
-        return "Overheated (>0.05%)"
+        if v <= 2:
+            return "Weak (0-2)"
+        if v <= 4:
+            return "Below avg (3-4)"
+        if v <= 6:
+            return "Neutral (5-6)"
+        if v <= 8:
+            return "Strong (7-8)"
+        return "Top (9-10)"
 
-    groups = _group_by(trades, fund_band)
+    groups = _group_by(trades, band)
     result = []
     for label, group in groups.items():
         wr, size = _win_rate(group)
         if size >= MIN_SAMPLE:
             result.append({"band": label, "win_rate": wr, "sample": size})
     result.sort(key=lambda x: x["win_rate"], reverse=True)
-    return {"funding_bands": result}
+    return {"l8_score_bands": result}
 
 
 def _power_combos(trades: list) -> dict:
@@ -176,17 +182,17 @@ def _power_combos(trades: list) -> dict:
     """
     combos = []
 
-    # FG + RSI combo
-    def fg_rsi_key(t):
-        fg = t.get("l9_fg_value")
+    # L9 candle-pattern score + RSI combo (column l9_fg_value is L9 score 0-10)
+    def l9_rsi_key(t):
+        l9 = t.get("l9_fg_value")
         rsi = t.get("l3_rsi")
-        if fg is None or rsi is None:
+        if l9 is None or rsi is None:
             return None
-        fg_label = "Fear" if fg < 45 else ("Neutral" if fg < 55 else "Greed")
+        l9_label = "Weak" if l9 < 5 else ("Neutral" if l9 < 7 else "Strong")
         rsi_label = "Low" if rsi < 45 else ("Mid" if rsi < 55 else "High")
-        return f"FG={fg_label} + RSI={rsi_label}"
+        return f"L9={l9_label} + RSI={rsi_label}"
 
-    groups = _group_by(trades, fg_rsi_key)
+    groups = _group_by(trades, l9_rsi_key)
     for label, group in groups.items():
         wr, size = _win_rate(group)
         if size >= MIN_SAMPLE and wr >= 65:
@@ -349,7 +355,7 @@ def _layer_block_stats(trades: list) -> dict:
     checks = {
         "L1 ADX>25": lambda t: (t.get("l1_adx") or 0) > 25,
         "L3 RSI 35-65": lambda t: 35 < (t.get("l3_rsi") or 50) < 65,
-        "L9 FG 25-74": lambda t: 25 < (t.get("l9_fg_value") or 50) < 74,
+        "L9 candle ≥6": lambda t: (t.get("l9_fg_value") or 0) >= 6,
         "L10 Buy>50%": lambda t: (t.get("l10_buy_ratio") or 50) > 50,
         "L4 Weekday(M-F)": lambda t: t.get("weekday") not in (
             "Saturday", "Sunday"),
@@ -399,7 +405,8 @@ def compute_patterns(symbol: str, days: Optional[int] = None,
         **_by_score_band(trades),
         "score_thresholds": _virtual_threshold_test(trades),
         **_by_rsi_band(trades),
-        **_by_fg_band(trades),
+        **_by_l9_score_band(trades),
+        **_by_l8_score_band(trades),
         **_power_combos(trades),
         **_optimal_hold(trades),
         **_layer_block_stats(trades),
@@ -412,9 +419,13 @@ def compute_patterns(symbol: str, days: Optional[int] = None,
 def format_patterns_message(patterns: dict, lang: str = "en") -> str:
     """Format patterns dict into a Telegram-ready Markdown message."""
     if "error" in patterns:
+        direction = patterns.get("direction", "LONG")
+        other = "SHORT" if direction == "LONG" else "LONG"
         msg = {
-            "en": "⚠️ No backtest data yet. Run `/backtest` first.",
-            "ru": "⚠️ Нет данных бэктеста. Сначала запусти `/backtest`.",
+            "en": (f"⚠️ No backtest data for {direction}. Run `/backtest` first, "
+                   f"or try the {other} direction."),
+            "ru": (f"⚠️ Нет данных бэктеста для {direction}. Сначала запусти "
+                   f"`/backtest` или попробуй направление {other}."),
         }
         return msg.get(lang, msg["en"])
 
@@ -502,13 +513,25 @@ def format_patterns_message(patterns: dict, lang: str = "en") -> str:
             )
         lines.append("")
 
-    # FG bands
-    fg_bands = patterns.get("fg_bands", [])
-    if fg_bands:
-        label = ("😱 Fear & Greed — лучшие зоны" if lang == "ru"
-                 else "😱 Fear & Greed — best zones")
+    # L9 candle-pattern score bands
+    l9_bands = patterns.get("l9_score_bands", [])
+    if l9_bands:
+        label = ("🕯 L9 свечной паттерн — лучшие зоны" if lang == "ru"
+                 else "🕯 L9 candle pattern — best zones")
         lines.append(f"*{label}*")
-        for b in fg_bands[:3]:
+        for b in l9_bands[:3]:
+            lines.append(
+                f"  {b['band']} — {b['win_rate']}% WR ({b['sample']})"
+            )
+        lines.append("")
+
+    # L8 S/R-proximity score bands
+    l8_bands = patterns.get("l8_score_bands", [])
+    if l8_bands:
+        label = ("🎯 L8 близость к S/R — лучшие зоны" if lang == "ru"
+                 else "🎯 L8 S/R proximity — best zones")
+        lines.append(f"*{label}*")
+        for b in l8_bands[:3]:
             lines.append(
                 f"  {b['band']} — {b['win_rate']}% WR ({b['sample']})"
             )

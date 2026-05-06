@@ -494,8 +494,11 @@ def get_open_paper_trades() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def has_open_paper_trade(symbol: str, direction: str = "LONG") -> bool:
-    """Check if there's an OPEN paper trade for this symbol+direction."""
+def has_open_paper_trade(symbol: str, direction: str) -> bool:
+    """Check if there's an OPEN paper trade for this symbol+direction.
+    direction is required — pass 'LONG' or 'SHORT' explicitly to avoid
+    silently scoping to one side.
+    """
     with _conn() as con:
         row = con.execute(
             "SELECT 1 FROM paper_trades "

@@ -957,9 +957,9 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Scale % results to actual $ using user's budget
     scale = budget / 100.0
-    gross_usd    = result["total_pnl_pct"]          * scale
-    net_fees_usd = result.get("total_pnl_net_fees_pct", gross_usd / scale * scale - signals * 0.2 * scale) * scale
-    after_tax_usd = result.get("total_pnl_after_tax_pct", net_fees_usd * 0.85 / scale * scale) * scale
+    gross_usd     = result["total_pnl_pct"]              * scale
+    net_fees_usd  = result["total_pnl_net_fees_pct"]     * scale
+    after_tax_usd = result["total_pnl_after_tax_pct"]    * scale
 
     # Per-trade averages in $
     avg_win_usd  = result["avg_profit_pct"]  * scale
@@ -1039,12 +1039,22 @@ async def bt_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def bt_patterns(update: Update,
                       context: ContextTypes.DEFAULT_TYPE):
-    """Patterns: asset chosen (or 'show patterns' button) → direction picker."""
+    """Patterns: asset chosen.
+    If user already picked a direction earlier in the session (e.g. just ran a
+    backtest or live analysis on this symbol), reuse it and skip the picker.
+    Otherwise show the direction picker.
+    """
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
 
     symbol = query.data[len("bt_patterns_"):]
+    stored_dir = (context.user_data.get("bt_direction")
+                  or (context.user_data.get(CFG, {}) or {}).get("direction"))
+    if stored_dir:
+        await _render_patterns(query, context, symbol, stored_dir.upper(), lang)
+        return
+
     await _show_direction_picker(
         query, lang, symbol, callback_prefix="patdir_",
         back_callback="menu_patterns",
@@ -1059,7 +1069,12 @@ async def pat_direction_chosen(update: Update,
     lang = _lang(context)
 
     direction, symbol = _parse_dir_callback(query.data, "patdir_")
+    context.user_data["bt_direction"] = direction
+    await _render_patterns(query, context, symbol, direction, lang)
 
+
+async def _render_patterns(query, context, symbol: str, direction: str, lang: str):
+    """Compute and render pattern message for symbol+direction."""
     try:
         from src.signals.pattern_analyzer import (
             compute_patterns,
@@ -1084,19 +1099,22 @@ async def pat_direction_chosen(update: Update,
 
 async def patterns_cmd(update: Update,
                        context: ContextTypes.DEFAULT_TYPE):
-    """/patterns — show patterns for last backtested symbol."""
+    """/patterns — show patterns for last backtested symbol+direction."""
     lang = _lang(context)
     symbol = context.user_data.get("bt_symbol",
                                    context.user_data.get(CFG, {})
                                    .get("asset", "BTCUSDT"))
+    direction = (context.user_data.get("bt_direction")
+                 or (context.user_data.get(CFG, {}) or {}).get("direction")
+                 or "LONG").upper()
     try:
         from src.signals.pattern_analyzer import (
             compute_patterns,
             format_patterns_message,
         )
-        patterns = compute_patterns(symbol)
+        patterns = compute_patterns(symbol, direction=direction)
         msg = format_patterns_message(patterns, lang)
-    except Exception as err:
+    except Exception:
         logger.exception("Patterns failed")
         msg = t("pat_no_data", lang, symbol=symbol)
 
@@ -1356,18 +1374,33 @@ def _format_wf_msg(symbol: str, lang: str, results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_CANDLE_CACHE: dict[tuple, list] = {}
+
+
+def _cached_candles(symbol: str, days: int, interval: str) -> list:
+    """Module-scope candle cache so repeated fetches (walk-forward, BOTH-mode
+    research) don't re-hit Binance. Key = (symbol, days, interval)."""
+    from src.backtest.engine import _fetch_candles_full
+    key = (symbol, days, interval)
+    if key not in _CANDLE_CACHE:
+        _CANDLE_CACHE[key] = _fetch_candles_full(symbol, days, interval)
+    return _CANDLE_CACHE[key]
+
+
 def _run_walkforward(symbol: str, direction: str = "LONG") -> list[dict]:
     """Walk-forward across a few TP/SL combos. Sync, runs in executor.
     direction: 'LONG' or 'SHORT'.
     """
     from src.backtest.engine import (
-        _fetch_candles_full, _calc_stats, _run_window_loop,
+        _calc_stats, _run_window_loop,
         _run_window_loop_short, WARMUP_CANDLES,
     )
     loop_fn = _run_window_loop_short if direction.upper() == "SHORT" else _run_window_loop
     combos = [(2.0, 1.0), (2.5, 1.25), (3.0, 1.5), (4.0, 2.0)]
-    candles = _fetch_candles_full(symbol, 720)
-    candles_4h = _fetch_candles_full(symbol, 720, "4h")
+    candles    = _cached_candles(symbol, 720, "1h")
+    candles_4h = _cached_candles(symbol, 720, "4h")
+    candles_1d = _cached_candles(symbol, 720, "1d")
+    candles_1w = _cached_candles(symbol, 720, "1w")
 
     n = len(candles)
     half = (n - WARMUP_CANDLES) // 2
@@ -1376,9 +1409,15 @@ def _run_walkforward(symbol: str, direction: str = "LONG") -> list[dict]:
 
     out = []
     for tp, sl in combos:
-        t1, _ = loop_fn(symbol, first, tp, sl, candles_4h=candles_4h)
+        t1, _ = loop_fn(symbol, first, tp, sl,
+                        candles_4h=candles_4h,
+                        candles_1d=candles_1d,
+                        candles_1w=candles_1w)
         s1 = _calc_stats(t1, len(first) - WARMUP_CANDLES, tp, sl)
-        t2, _ = loop_fn(symbol, second, tp, sl, candles_4h=candles_4h)
+        t2, _ = loop_fn(symbol, second, tp, sl,
+                        candles_4h=candles_4h,
+                        candles_1d=candles_1d,
+                        candles_1w=candles_1w)
         s2 = _calc_stats(t2, len(second) - WARMUP_CANDLES, tp, sl)
 
         in_net = s1["total_pnl_after_tax_pct"]
@@ -1708,9 +1747,11 @@ def _research_for_assets(assets: list[str], days: int,
                          direction: str = "LONG") -> list[dict]:
     """Run research grid for chosen assets in a direction.
     direction: 'LONG' or 'SHORT'. Returns flat list of result dicts.
+    Candles are pulled from the module-level cache so BOTH-mode (which calls this
+    twice — once per direction) does a single fetch per asset.
     """
     from src.backtest.engine import (
-        _fetch_candles_full, _calc_stats, _run_window_loop,
+        _calc_stats, _run_window_loop,
         _run_window_loop_short, WARMUP_CANDLES, RESEARCH_TP_SL,
     )
     direction = direction.upper()
@@ -1718,11 +1759,16 @@ def _research_for_assets(assets: list[str], days: int,
     needed = days * 24 + WARMUP_CANDLES
     out = []
     for sym in assets:
-        candles = _fetch_candles_full(sym, days)
-        candles_4h = _fetch_candles_full(sym, days, "4h")
+        candles    = _cached_candles(sym, days, "1h")
+        candles_4h = _cached_candles(sym, days, "4h")
+        candles_1d = _cached_candles(sym, days, "1d")
+        candles_1w = _cached_candles(sym, days, "1w")
         sub = candles[-needed:] if len(candles) >= needed else candles
         for tp, sl in RESEARCH_TP_SL:
-            trades, total = loop_fn(sym, sub, tp, sl, candles_4h=candles_4h)
+            trades, total = loop_fn(sym, sub, tp, sl,
+                                    candles_4h=candles_4h,
+                                    candles_1d=candles_1d,
+                                    candles_1w=candles_1w)
             stats = _calc_stats(trades, total, tp, sl)
             out.append({
                 "symbol": sym, "direction": direction,

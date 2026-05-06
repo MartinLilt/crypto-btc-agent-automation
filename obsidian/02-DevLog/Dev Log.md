@@ -4,6 +4,44 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-05-06 — Audit punch-list cleanup (12 items)
+
+**Summary:** Worked through a 21-item audit punch list. Two critical correctness bugs fixed (one of them changes every backtest number), eight important items resolved, and a handful of dead-code / UX cleanups.
+
+### Critical fixes
+
+- **Backtest now applies the same daily + weekly EMA hard blocks as live** (`engine.py:_eval_bar`, `_eval_bar_short`). Previously paper trader and backtest fired entries that the live `check_entry_signal` would have blocked — the same class of divergence as the 4h fix in commit 064829d. Engine now fetches 1d/1w candle history alongside 1h+4h, slices to ts_ms with `_slice_higher_tf_at`, and applies `_daily_block_long/short` + `_weekly_block_long/short` predicates inside `all_pass`. Wired through `_run_window_loop[_short]`, `run_backtest[_short]`, `run_backtest_research[_short]`, `paper_log.run_once`, `_research_for_assets`, and `_run_walkforward`. **All historical backtest numbers are now stricter than what was previously stored.** Sample: BTC 180d LONG dropped from 8 → 3 signals; the headline 720d numbers will need to be re-measured before being quoted.
+- **Pattern analyzer was reading the wrong DB columns.** The schema columns `l9_fg_value` and `l8_funding` were named after old layer roles (Fear&Greed, Funding) but the engine writes the new L9 (candle pattern) and L8 (S/R proximity) layer scores there — both in the 0–10 range. So `_by_fg_band` and `_by_funding_band` were bucketing 1–10 scores into "Extreme Fear / Overheated" buckets and producing meaningless output. Replaced both with `_by_l9_score_band` / `_by_l8_score_band` (Weak/Below avg/Neutral/Strong/Top). Updated `_power_combos` and `_layer_block_stats` accordingly. Column names left as-is (no migration churn) but the misnaming is documented in the function docstrings.
+
+### Important fixes
+
+- **SHORT trade rows now have full schema parity** with LONG — added `l4_pass, l5_spread_pct, l6_rr_ratio, l8_funding, l8_oi_chg, l9_fg_value, l10_net_vol` to the dict in `_run_window_loop_short`. Previously these seven columns were NULL for every short row in the DB, breaking `_layer_block_stats` for SHORT.
+- **Candle cache** in `main.py` (`_CANDLE_CACHE` keyed by `(symbol, days, interval)`) drives both `_run_walkforward` and `_research_for_assets`. Paper-wizard BOTH-mode previously did 2× full Binance fetches per asset (once per direction); now one fetch is reused.
+- **Patterns flow reuses stored direction.** `bt_patterns_<asset>` (the "show patterns" button after a backtest) and the `/patterns` slash command now read `context.user_data["bt_direction"]` (or `cfg["direction"]`) and skip the picker if it's set. Removes the 2-tap regression introduced when direction-pickers landed.
+- **`bt_run` USD math simplified.** The fallback ladder `result.get("total_pnl_net_fees_pct", gross_usd / scale * scale - signals * 0.2 * scale) * scale` was double-scaled and arithmetically wrong. The fallback was dead because `_calc_stats` always returns the key — replaced with the direct read.
+- **`has_open_paper_trade(direction)` is now required** (no default). Prevents future callers from silently scoping to LONG.
+
+### Nice-to-fix
+
+- Deleted `_fetch_fear_greed_history` and `_fetch_funding_history` from `engine.py` — both referenced undefined names (`_FEAR_GREED_URL`, `_BINANCE_FUTURES`, `cache_fear_greed_history`, `get_fear_greed_for_date`) and would `NameError` if called. Never called from anywhere.
+- Dropped the ignored `spread_approx` parameter from `_eval_bar` and `_eval_bar_short` signatures; updated all call sites.
+- Removed unused imports: `GOOD_HOURS_UTC`, `SKIP_WEEKDAYS`, `_score_l10`, `timedelta` from `engine.py`.
+- `short_disclaimer` no longer hard-codes "BTC ≈0%, SOL −36%, ETH −51%" — generic warning text instead.
+- "No data" pattern message now suggests trying the other direction (LONG ⇄ SHORT).
+- Renamed `_slice_4h_at` → `_slice_higher_tf_at` (the helper was already generic; the name was historical).
+
+### Skipped
+
+- Item #5 (engine ignores L7 news in backtest) — pre-existing, requires historical news data we don't have. Backlog.
+- Item #11 (`is_downtrend` partial-alignment branch) — on closer inspection symmetric with `is_uptrend`; both else-branches only fire on float equality (essentially never). Cosmetic.
+- Item #12 (SHORT path missing `bt_override_score` logging) — purely diagnostic.
+
+### Known follow-up
+
+CLAUDE.md's headline backtest numbers (BTC +21%, ETH +28%, SOL +67%) were measured before daily/weekly EMA blocks landed in backtest. They should be re-measured with the stricter engine before being quoted. Same applies to the walk-forward OOS numbers in the same doc.
+
+---
+
 ## 2026-05-05 — SHORT direction reaches feature parity with LONG
 
 **Summary:** Promoted the existing short-direction infrastructure from "engine-only, hidden" to a first-class option exposed across every analysis surface in the bot: live analysis, backtest, research grid, walk-forward, patterns, and paper trading (including dual-direction "BOTH" mode). User picks LONG or SHORT after the asset, with a one-line −EV disclaimer carrying the bull-regime warning.
