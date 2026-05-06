@@ -36,9 +36,29 @@ Reverse-chronological. Add entry at top when significant changes land.
 - Item #11 (`is_downtrend` partial-alignment branch) — on closer inspection symmetric with `is_uptrend`; both else-branches only fire on float equality (essentially never). Cosmetic.
 - Item #12 (SHORT path missing `bt_override_score` logging) — purely diagnostic.
 
-### Known follow-up
+### Re-measured backtest numbers
 
-CLAUDE.md's headline backtest numbers (BTC +21%, ETH +28%, SOL +67%) were measured before daily/weekly EMA blocks landed in backtest. They should be re-measured with the stricter engine before being quoted. Same applies to the walk-forward OOS numbers in the same doc.
+Re-ran 720d backtest + walk-forward for all three assets with the new stricter engine (LONG TP=3%/SL=1.5%):
+
+| Asset | Old after-tax (pre-fix) | **New after-tax** | Old WF OOS | **New WF OOS** |
+|---|---:|---:|---:|---:|
+| BTC | +21.08% | **+5.79%** | profitable both halves | +4.57% (20 sigs) |
+| ETH | +28.86% | **+14.33%** | +29.41% | +24.05% (31 sigs) |
+| SOL | +67.49% | **+26.26%** | +47.34% | +14.87% (40 sigs) |
+
+BTC and SOL absorbed the biggest cut — daily/weekly hard blocks remove the most trades when the trend is choppy. ETH stayed strongest because its 720d window has cleaner directional regimes.
+
+**SHORT (now also gated by inverted daily/weekly blocks):**
+
+| Asset | Sigs | WR | Net | After-tax |
+|---|---:|---:|---:|---:|
+| BTC | 104 | 38.5% | +32.42% | +9.88% |
+| ETH | 168 | 33.3% | +0.00% | −33.60% |
+| SOL | 216 | 38.0% | +46.92% | +3.16% |
+
+The previous "shorts are catastrophically negative" picture is mostly an artifact of evaluating shorts in non-bearish regimes — once the daily/weekly bear-alignment hard block is on, BTC and SOL shorts go positive on the 720d window. ETH still loses after tax. Disclaimer was generalised so no specific numbers go stale.
+
+CLAUDE.md updated to reflect the new headline numbers and to call out the re-measurement date so future readers know which engine version produced them.
 
 ---
 

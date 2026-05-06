@@ -32,10 +32,24 @@ Users interact via Telegram inline buttons. Supports EN/RU. Deployed via Docker.
 ## Supported Assets
 `BTCUSDT`, `SOLUSDT`, `ETHUSDT`
 
-Backtest evidence (720d, TP=3%/SL=1.5%, after fees + LT 15% tax, 4h-wired):
-- BTC: +21.08%, WR=37.8%, profitable both halves walk-forward
-- ETH: +28.86%, WR=40.2%, walk-forward OOS = +29.41%
-- SOL: +67.49%, WR=48.0%, walk-forward OOS = +47.34% (strongest)
+Backtest evidence (720d, TP=3%/SL=1.5%, after Binance 0.2% round-trip fees;
+**re-measured 2026-05-06** with daily EMA50 + weekly EMA21 hard blocks active in backtest, matching live behaviour):
+
+**LONG**
+
+| Asset | Sigs | WR | Net (post-fees) | After 15% LT tax | Walk-forward OOS (after-tax) |
+|---|---:|---:|---:|---:|---:|
+| BTC | 60 | 33.3% | +18.81% | +5.79% | +4.57% (20 OOS sigs) |
+| ETH | 58 | 41.4% | +28.46% | +14.33% | +24.05% (31 OOS sigs) |
+| SOL | 93 | 45.2% | +49.50% | +26.26% | +14.87% (40 OOS sigs) |
+
+**SHORT** (now also gated by inverted daily/weekly EMA blocks — only fires when daily and weekly trends are bearish; bull-regime data still dominates the window)
+
+| Asset | Sigs | WR | Net (post-fees) | After 15% LT tax |
+|---|---:|---:|---:|---:|
+| BTC | 104 | 38.5% | +32.42% | +9.88% |
+| ETH | 168 | 33.3% | +0.00% | −33.60% |
+| SOL | 216 | 38.0% | +46.92% | +3.16% |
 
 Score-based system uses universal thresholds; per-asset tuning not currently needed.
 
