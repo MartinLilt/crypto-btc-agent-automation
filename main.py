@@ -1,6 +1,9 @@
 import asyncio
+import fcntl
 import os
+import sys
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
 
 from src.trading.modes import TradingMode
@@ -2291,7 +2294,43 @@ async def post_init(app):
                     n, "y" if n == 1 else "ies")
 
 
+def _acquire_singleton_lock():
+    """Refuse to start if another bot instance is already running.
+
+    Uses fcntl flock on data/bot.lock — second copy hits BlockingIOError and
+    exits with a friendly message instead of crashing later on Telegram 409
+    Conflict (which leaves zombie processes accumulating polling locks).
+    Opens with O_CREAT (no truncate) so the existing PID is preserved on disk
+    when a second instance fails to acquire the lock.
+    """
+    Path("data").mkdir(exist_ok=True)
+    lock_path = Path("data/bot.lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            os.lseek(fd, 0, 0)
+            existing = os.read(fd, 32).decode().strip() or "?"
+        except Exception:
+            existing = "?"
+        os.close(fd)
+        sys.stderr.write(
+            f"❌ Another bot instance is already running (PID {existing}).\n"
+            f"   Run `scripts/restart_bot.sh` to kill it cleanly,\n"
+            f"   or `kill -9 {existing}` if you know what you're doing.\n"
+        )
+        sys.exit(1)
+    # We hold the lock — record our PID
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpid()).encode())
+    return fd       # caller keeps the FD; lock auto-released on process exit
+
+
 def main():
+    # Refuse if another instance is up — prevents Telegram 409 zombies
+    _SINGLETON_LOCK = _acquire_singleton_lock()  # noqa: F841 — kept alive for process lifetime
+
     # Persist user_data (language, picked asset) across bot restarts.
     # Without this, every restart wiped each user's language preference back to "en".
     persistence = PicklePersistence(filepath="data/bot_state.pkl")
