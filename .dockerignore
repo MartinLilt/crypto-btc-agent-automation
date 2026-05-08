@@ -1,0 +1,41 @@
+# Secrets — set via Railway env, never bake into image
+.env
+.env.*
+!.env.example
+private.pem
+
+# Python cache / venv (Dockerfile installs fresh)
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local runtime state — bot uses Railway volume for /app/data
+data/*.db
+data/*.json
+data/*.pkl
+data/bot.lock
+logs/
+*.log
+bot.log
+
+# Dev / VCS
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# Obsidian docs (not needed at runtime)
+obsidian/
+
+# Tests / scripts not needed in image
+tests/
+*.md
+!README.md

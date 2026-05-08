@@ -17,6 +17,7 @@ logs/*.log
 data/*.db
 data/*.json
 data/*.pkl
+data/bot.lock
 *.log
 
 # Claude Code local artifacts
