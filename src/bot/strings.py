@@ -380,22 +380,46 @@ STRINGS = {
     },
     "ps_pick_assets": {
         "en": (
-            "📊 *Setup Paper Trading — step 1/2*\n\n"
+            "📊 *Setup Paper Trading — step 1/5*\n\n"
             "Select which assets to research. Tap to toggle. Press *Done* when ready."
         ),
         "ru": (
-            "📊 *Настройка Paper-Trading — шаг 1/2*\n\n"
+            "📊 *Настройка Paper-Trading — шаг 1/5*\n\n"
             "Выбери активы для исследования. Тап = вкл/выкл. Нажми *Готово* когда выбрал."
         ),
     },
     "ps_pick_period": {
         "en": (
-            "📊 *Setup — step 2/2*\n\n"
+            "📊 *Setup — step 3/5*\n\n"
             "Research lookback period (deeper = more samples but slower regime adaptation)."
         ),
         "ru": (
-            "📊 *Настройка — шаг 2/2*\n\n"
+            "📊 *Настройка — шаг 3/5*\n\n"
             "Период истории для исследования (длиннее = больше данных, но медленнее адаптация к режиму)."
+        ),
+    },
+    "ps_pick_capital": {
+        "en": (
+            "💰 *Setup — step 4/5*\n\n"
+            "Pick the *starting capital* for this paper portfolio.\n"
+            "All trades will be sized against this balance and PnL is tracked in $."
+        ),
+        "ru": (
+            "💰 *Настройка — шаг 4/5*\n\n"
+            "Выбери *стартовый капитал* для этого paper-портфеля.\n"
+            "Все сделки будут считаться от этого баланса, PnL — в $."
+        ),
+    },
+    "ps_pick_trade_size": {
+        "en": (
+            "📐 *Setup — step 5/5*\n\n"
+            "Capital: *${capital:,}*. Pick the *$ size per trade*.\n"
+            "If free capital is below this on a signal, the trade is skipped."
+        ),
+        "ru": (
+            "📐 *Настройка — шаг 5/5*\n\n"
+            "Капитал: *${capital:,}*. Выбери *размер $ на сделку*.\n"
+            "Если свободного капитала меньше — сигнал пропускается."
         ),
     },
     "ps_no_assets": {
@@ -639,8 +663,8 @@ STRINGS = {
 
     # ── Paper wizard direction step ───────────────────────────────────────────
     "ps_pick_direction": {
-        "en": "*Step 2*: pick direction(s) to paper-trade:",
-        "ru": "*Шаг 2*: выбери направление(я) для paper trading:",
+        "en": "*Step 2/5*: pick direction(s) to paper-trade:",
+        "ru": "*Шаг 2/5*: выбери направление(я) для paper trading:",
     },
     "btn_paper_activate": {
         "en": "✅ Activate selected",

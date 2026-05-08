@@ -1670,6 +1670,8 @@ async def menu_research_paper(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ── Paper Trading Setup Wizard ────────────────────────────────────────────────
 
 PAPER_PERIODS = [90, 180, 365]
+PAPER_CAPITAL_PRESETS = [500, 1000, 2000, 5000]    # $ starting capital options
+PAPER_TRADE_SIZE_PRESETS = [50, 100, 200, 500]     # $ per-trade size options
 PAPER_JOB_NAME = "paper_log_tick"
 
 
@@ -1815,12 +1817,65 @@ def _research_for_assets(assets: list[str], days: int,
 
 
 async def ps_period_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User picked period — run research per direction and rank top 3 by WR.
-    For BOTH: produces top-3 LONG + top-3 SHORT (six total)."""
+    """Step 3 done — save period, show capital picker."""
     query = update.callback_query
     await query.answer()
     lang = _lang(context)
     days = int(query.data[len("ps_period_"):])
+    context.user_data["ps_days"] = days
+
+    rows = [[
+        InlineKeyboardButton(f"${c:,}", callback_data=f"ps_capital_{c}")
+        for c in PAPER_CAPITAL_PRESETS
+    ]]
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data="ps_assets_done",
+    )])
+    await query.edit_message_text(
+        t("ps_pick_capital", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def ps_capital_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 4 done — save capital, show per-trade-size picker."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    capital = int(query.data[len("ps_capital_"):])
+    context.user_data["ps_capital"] = capital
+
+    # Filter to per-trade sizes that fit within the capital (max 50% of cap)
+    valid_sizes = [s for s in PAPER_TRADE_SIZE_PRESETS if s <= capital // 2]
+    if not valid_sizes:
+        valid_sizes = [PAPER_TRADE_SIZE_PRESETS[0]]
+
+    rows = [[
+        InlineKeyboardButton(f"${s}", callback_data=f"ps_size_{s}")
+        for s in valid_sizes
+    ]]
+    rows.append([InlineKeyboardButton(
+        "⬅️ " + ("Back" if lang == "en" else "Назад"),
+        callback_data=f"ps_period_{context.user_data.get('ps_days', 365)}",
+    )])
+    await query.edit_message_text(
+        t("ps_pick_trade_size", lang, capital=capital),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def ps_size_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 5 done — save per-trade size, run research grid + show top strategies."""
+    query = update.callback_query
+    await query.answer()
+    lang = _lang(context)
+    per_trade = int(query.data[len("ps_size_"):])
+    context.user_data["ps_per_trade"] = per_trade
+
+    days = context.user_data.get("ps_days", 365)
     assets = _ps_assets(context)
     direction = (context.user_data.get("ps_direction") or "LONG").upper()
     directions_to_research = ["LONG", "SHORT"] if direction == "BOTH" else [direction]
@@ -1978,11 +2033,16 @@ async def ps_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "expected_net": c["net_pct"],
         })
 
+    starting_capital = float(context.user_data.get("ps_capital", 1000))
+    per_trade_size   = float(context.user_data.get("ps_per_trade", 100))
+
     cfg = {
-        "active":         True,
-        "strategies":     strategies,
-        "notify_chat_id": query.from_user.id if query.from_user else None,
-        "started_at":     datetime.now(timezone.utc).isoformat(),
+        "active":           True,
+        "strategies":       strategies,
+        "starting_capital": starting_capital,
+        "per_trade_size":   per_trade_size,
+        "notify_chat_id":   query.from_user.id if query.from_user else None,
+        "started_at":       datetime.now(timezone.utc).isoformat(),
     }
     context.application.bot_data["paper_config"] = cfg
     _schedule_paper_job(context.application)
@@ -2066,6 +2126,8 @@ async def _paper_log_tick(context):
         return
 
     notify_chat = cfg.get("notify_chat_id")
+    starting_capital = cfg.get("starting_capital")
+    per_trade_size   = cfg.get("per_trade_size")
     aggregate_opened: list[dict] = []
     aggregate_closed: list[dict] = []
 
@@ -2081,6 +2143,8 @@ async def _paper_log_tick(context):
                     sl_pct=s["sl_pct"],
                     direction=s["direction"],
                     notify_inline=False,
+                    starting_capital=starting_capital,
+                    per_trade_size=per_trade_size,
                 ),
             )
             aggregate_opened.extend(res.get("opened", []))
@@ -2364,6 +2428,8 @@ def main():
     app.add_handler(CallbackQueryHandler(ps_assets_done, pattern="^ps_assets_done$"))
     app.add_handler(CallbackQueryHandler(ps_direction_chosen, pattern="^psdir_"))
     app.add_handler(CallbackQueryHandler(ps_period_chosen, pattern="^ps_period_"))
+    app.add_handler(CallbackQueryHandler(ps_capital_chosen, pattern="^ps_capital_"))
+    app.add_handler(CallbackQueryHandler(ps_size_chosen, pattern="^ps_size_"))
     app.add_handler(CallbackQueryHandler(ps_strategy_chosen, pattern="^ps_pick_"))
     app.add_handler(CallbackQueryHandler(ps_activate, pattern="^ps_activate$"))
     app.add_handler(CallbackQueryHandler(ps_stop, pattern="^ps_stop$"))

@@ -49,7 +49,10 @@ from src.data.db import (
     has_open_paper_trade,
     close_paper_trade,
     mark_paper_notified,
+    get_paper_capital_state,
 )
+
+BINANCE_TAKER_FEE = 0.001  # 0.1% per side
 
 logging.basicConfig(
     level=logging.INFO,
@@ -225,7 +228,9 @@ def run_once(assets: list[str] | None = None,
              tp_pct: float | None = None,
              sl_pct: float | None = None,
              direction: str = "LONG",
-             notify_inline: bool = True) -> dict:
+             notify_inline: bool = True,
+             starting_capital: float | None = None,
+             per_trade_size: float | None = None) -> dict:
     """
     One iteration of paper-trading: update open trades, evaluate new signals,
     open trades on hits.
@@ -250,6 +255,14 @@ def run_once(assets: list[str] | None = None,
     closed_events: list[dict] = []
 
     init_db()
+
+    # Capital tracking — only enabled when starting_capital is provided
+    track_capital = starting_capital is not None and per_trade_size is not None
+    if track_capital:
+        cap = get_paper_capital_state(starting_capital)
+        free_capital = cap["free_capital"]
+    else:
+        free_capital = float("inf")  # unlimited for legacy CLI mode
 
     # Fetch candles once per asset (1h + 4h + 1d + 1w for multi-TF hard blocks)
     candles_by_asset: dict[str, list] = {}
@@ -281,23 +294,41 @@ def run_once(assets: list[str] | None = None,
                 continue
         outcome = _check_open_trade(trade, candles)
         if outcome:
+            # Compute realistic $ PnL using stored qty + entry/exit fees
+            qty = trade.get("qty") or 0.0
+            entry_fee = trade.get("entry_fee") or 0.0
+            position_size = trade.get("position_size") or 0.0
+            trade_dir = (trade.get("direction") or "LONG").upper()
+            exit_notional = qty * outcome["exit_price"]
+            exit_fee = exit_notional * BINANCE_TAKER_FEE
+            if trade_dir == "SHORT":
+                gross_pnl = qty * (trade["entry_price"] - outcome["exit_price"])
+            else:
+                gross_pnl = qty * (outcome["exit_price"] - trade["entry_price"])
+            pnl_usd = round(gross_pnl - entry_fee - exit_fee, 4)
+
             close_paper_trade(
                 trade["id"], outcome["status"], outcome["exit_price"],
                 outcome["exit_time"], outcome["pnl_pct"],
                 outcome["pnl_pct_net_fees"], outcome["hold_hours"],
+                exit_fee=round(exit_fee, 4), pnl_usd=pnl_usd,
             )
+            # Capital reservation: position_size returns to free, plus PnL
+            if track_capital:
+                free_capital += position_size + pnl_usd
             closed_count += 1
-            trade_dir = (trade.get("direction") or "LONG").upper()
-            logger.info("CLOSED #%d %s %s %s: %.2f%% (%dh)",
+            logger.info("CLOSED #%d %s %s %s: %+.2f$ on $%.2f size (%dh)",
                         trade["id"], symbol, trade_dir, outcome["status"],
-                        outcome["pnl_pct_net_fees"], outcome["hold_hours"])
+                        pnl_usd, position_size, outcome["hold_hours"])
             event = {
                 "trade_id":  trade["id"],
                 "symbol":    symbol,
                 "direction": trade_dir,
                 "status":    outcome["status"],
-                "entry_price": trade["entry_price"],
-                "exit_price":  outcome["exit_price"],
+                "entry_price":   trade["entry_price"],
+                "exit_price":    outcome["exit_price"],
+                "position_size": position_size,
+                "pnl_usd":       pnl_usd,
                 "pnl_pct_net_fees": outcome["pnl_pct_net_fees"],
                 "hold_hours":  outcome["hold_hours"],
             }
@@ -335,11 +366,27 @@ def run_once(assets: list[str] | None = None,
             )
             if not signal:
                 continue
+
+            # Position sizing + capital reservation
+            if track_capital:
+                if free_capital < per_trade_size:
+                    logger.info(
+                        "%s %s: signal fired but insufficient capital ($%.2f free, $%.2f required) — skipping",
+                        symbol, dir_name, free_capital, per_trade_size)
+                    continue
+                qty = per_trade_size / signal["entry_price"]
+                entry_notional = qty * signal["entry_price"]
+                entry_fee = entry_notional * BINANCE_TAKER_FEE
+                signal["position_size"] = round(per_trade_size, 4)
+                signal["qty"] = round(qty, 8)
+                signal["entry_fee"] = round(entry_fee, 4)
+                free_capital -= per_trade_size
+
             trade_id = open_paper_trade(signal)
             opened_count += 1
-            logger.info("OPENED #%d %s %s @ $%.2f (TP $%.2f, SL $%.2f)",
+            logger.info("OPENED #%d %s %s @ $%.2f (size=$%.2f qty=%s)",
                         trade_id, symbol, dir_name, signal["entry_price"],
-                        signal["tp_price"], signal["sl_price"])
+                        signal.get("position_size", 0), signal.get("qty", "—"))
             event = {
                 "trade_id":    trade_id,
                 "symbol":      symbol,
@@ -350,6 +397,8 @@ def run_once(assets: list[str] | None = None,
                 "tp_pct":      use_tp,
                 "sl_pct":      use_sl,
                 "score":       signal["total_score"],
+                "position_size": signal.get("position_size"),
+                "qty":           signal.get("qty"),
             }
             opened_events.append(event)
             if notify_inline:

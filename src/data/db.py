@@ -242,7 +242,12 @@ def init_db():
             "ALTER TABLE backtest_trades ADD COLUMN pnl_pct_net_fees REAL",
             "ALTER TABLE backtest_runs   ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'",
             "ALTER TABLE backtest_trades ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'",
-            "ALTER TABLE paper_trades    ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'",
+            "ALTER TABLE paper_trades    ADD COLUMN direction     TEXT NOT NULL DEFAULT 'LONG'",
+            "ALTER TABLE paper_trades    ADD COLUMN position_size REAL",
+            "ALTER TABLE paper_trades    ADD COLUMN qty           REAL",
+            "ALTER TABLE paper_trades    ADD COLUMN entry_fee     REAL",
+            "ALTER TABLE paper_trades    ADD COLUMN exit_fee      REAL",
+            "ALTER TABLE paper_trades    ADD COLUMN pnl_usd       REAL",
         ]:
             try:
                 con.execute(col_def)
@@ -473,6 +478,7 @@ def open_paper_trade(data: dict) -> int:
         "symbol", "direction", "entry_time", "entry_price",
         "tp_pct", "sl_pct", "tp_price", "sl_price",
         "total_score", "layer_snapshot",
+        "position_size", "qty", "entry_fee",
     ]
     present = {k: data[k] for k in cols if k in data}
     placeholders = ", ".join("?" * len(present))
@@ -510,16 +516,18 @@ def has_open_paper_trade(symbol: str, direction: str) -> bool:
 
 def close_paper_trade(trade_id: int, status: str, exit_price: float,
                       exit_time: str, pnl_pct: float, pnl_pct_net_fees: float,
-                      hold_hours: int):
+                      hold_hours: int,
+                      exit_fee: float = 0.0, pnl_usd: float = 0.0):
     """Mark paper trade as closed with outcome."""
     with _conn() as con:
         con.execute(
             """UPDATE paper_trades
                SET status=?, exit_price=?, exit_time=?, pnl_pct=?,
-                   pnl_pct_net_fees=?, hold_hours=?
+                   pnl_pct_net_fees=?, hold_hours=?,
+                   exit_fee=?, pnl_usd=?
                WHERE id=?""",
             (status, exit_price, exit_time, pnl_pct, pnl_pct_net_fees,
-             hold_hours, trade_id),
+             hold_hours, exit_fee, pnl_usd, trade_id),
         )
 
 
@@ -531,6 +539,37 @@ def mark_paper_notified(trade_id: int, kind: str):
             f"UPDATE paper_trades SET {col}=1 WHERE id=?",
             (trade_id,),
         )
+
+
+def get_paper_capital_state(starting_capital: float) -> dict:
+    """Compute live capital state from the paper_trades table.
+
+    Returns dict with `current_balance`, `open_exposure`, `free_capital`,
+    `realised_pnl`, `n_open`, `n_closed`. Used by the dashboard, capital
+    reservation, and pushes.
+    """
+    with _conn() as con:
+        row_closed = con.execute(
+            "SELECT COALESCE(SUM(pnl_usd), 0) AS pnl, COUNT(*) AS n "
+            "FROM paper_trades WHERE status != 'OPEN'"
+        ).fetchone()
+        row_open = con.execute(
+            "SELECT COALESCE(SUM(position_size), 0) AS exposure, COUNT(*) AS n "
+            "FROM paper_trades WHERE status = 'OPEN'"
+        ).fetchone()
+    realised_pnl   = float(row_closed["pnl"] or 0.0)
+    open_exposure  = float(row_open["exposure"] or 0.0)
+    current_balance = starting_capital + realised_pnl
+    free_capital    = current_balance - open_exposure
+    return {
+        "starting_capital": starting_capital,
+        "current_balance":  round(current_balance, 2),
+        "realised_pnl":     round(realised_pnl, 2),
+        "open_exposure":    round(open_exposure, 2),
+        "free_capital":     round(free_capital, 2),
+        "n_open":           int(row_open["n"]),
+        "n_closed":         int(row_closed["n"]),
+    }
 
 
 def get_paper_trades(symbol: str | None = None,
