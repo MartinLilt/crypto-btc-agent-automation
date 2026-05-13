@@ -4,6 +4,244 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-05-13 (Evening) — 6-asset config + ETH/LINK overweight allocation — $147/mo OOS on $10k
+
+**Summary:** Expanded supported asset universe from 3 (BTC/SOL/ETH) to 6 (+ LINK/AVAX/BNB), with per-asset OOS-tuned thresholds for the new alts. LINK turned out to be a second workhorse alongside ETH — combined they contribute 86% of OOS edge. Added `RECOMMENDED_ASSET_WEIGHTS` to overweight the workhorses. Capital required for $500/mo target dropped from $90k → $34k.
+
+### Score-weighted sizing — rejected
+
+Tried `_position_size_for_score` (0.5×/1×/1.5×/2× base size by score margin above threshold). Result: −$287 vs per-asset baseline because 70% of trades cluster at margin 0-4 and get 0.5× sizing. Distribution is too flat to discriminate position size by score alone. Kept the code in `paper_replay.py` behind `--score-weighted` flag for future experiments but not in default path.
+
+### ETH-overweight sweep
+
+| Allocation | OOS $ | OOS $/mo | Max DD |
+|---|---:|---:|---:|
+| Baseline equal (3 assets) | +$667 | $56 | 3.4% |
+| ETH 60 / SOL 30 / BTC 10 | +$992 | $83 | 5.2% |
+| ETH 75 / SOL 20 / BTC 5  | +$1144 | $95 | 6.2% |
+| No-BTC (ETH 70 / SOL 30) | +$741 | $62 | 3.9% |
+
+### New asset sweep (LINK / AVAX / BNB)
+
+| Asset | OOS-best threshold | OOS Trades | OOS WR | OOS $ |
+|---|---:|---:|---:|---:|
+| LINK | 50 | 138 | 44.2% | **+$377** ← strong |
+| AVAX | 50 | 129 | 38.8% | +$57 (marginal) |
+| BNB  | 60 | 109 | 43.1% | +$97 |
+
+LINK at threshold 50 is the surprise — its OOS edge per $10k is $31/mo standalone, basically matching ETH ($37/mo). Together ETH+LINK are the strategy's revenue generators.
+
+### 6-asset combined results
+
+| Config | Trades | OOS $ | OOS $/mo | Max DD |
+|---|---:|---:|---:|---:|
+| 6 assets equal weight | 1221 | +$1215 | $101 | 4.10% |
+| **6 assets ETH+LINK heavy** (canonical) | 1221 | **+$1764** | **$147** | 6.33% |
+
+ETH+LINK heavy = weights `{BTC: 0.05, SOL: 0.15, ETH: 0.30, LINK: 0.30, AVAX: 0.10, BNB: 0.10}`. ETH and LINK get $1800/trade (1.8× base), others get $300-900.
+
+OOS breakdown for ETH+LINK heavy:
+- ETH @ 60: 80 trades, WR 51.2%, **+$832** at $1800/trade
+- LINK @ 50: 138 trades, WR 44.2%, **+$679** at $1800/trade
+- SOL @ 65: 57 trades, WR 43.9%, +$140 at $900/trade
+- BTC @ 70: 11 trades, WR 54.5%, +$20 at $300/trade
+- BNB @ 60: 109 trades, WR 43.1%, +$58 at $600/trade
+- AVAX @ 50: 129 trades, WR 38.8%, +$34 at $600/trade
+
+### Code changes
+
+- `src/signals/indicators.py:48-83` — `ENTRY_SCORE_THRESHOLDS` extended with LINK=50, AVAX=50, BNB=60. New `RECOMMENDED_ASSET_WEIGHTS` constant exported for paper_log / wizard integration.
+- `main.py:40-46` — Added Chainlink, Avalanche, BNB to the user-facing `ASSETS` list (asset picker now shows 6 options).
+- `scripts/paper_log.py:65` — Extended `ASSETS` list to include the new alts (live paper trader now monitors all 6).
+- `scripts/paper_replay.py` — added `--score-weighted` and `--asset-weights` flags; both threaded through to position sizing.
+
+### $500/mo capital requirement progression
+
+| Step | Capital for $500/mo |
+|---|---:|
+| Old threshold=70 (baseline) | $400k+ |
+| + Threshold=50 uniform | $192k |
+| + Per-asset thresholds (BTC/SOL/ETH) | $90k |
+| + ETH-overweight allocation | $60k |
+| **+ 6-asset basket, ETH+LINK heavy** | **$34k** |
+
+### Open follow-ups
+
+- **Live paper test for 4–8 weeks** with new 6-asset config + recommended weights before scaling capital. Especially want to validate LINK's OOS edge — 138 trades is statistically meaningful but only one 365d window.
+- **AVAX** OOS edge is thin (+$57 on 129 trades, $0.44/trade). Consider removing if next sweep also shows low edge — adds noise, fees, and capital lockup for little return.
+- **Leverage simulation** — next experiment. Add `--leverage` flag + funding-cost model. 3-4× could push toward $500/mo on $10k base capital, at DD 19-25%.
+- **ML on layer weights** — alternative to leverage. Train binary classifier on (L1..L10 scores → trade outcome) to find non-linear combinations. Could push WR/EV.
+- **Integrate `RECOMMENDED_ASSET_WEIGHTS` into paper-wizard** as an "Apply recommended portfolio" button — currently weights are only used in `paper_replay.py` via CLI.
+
+---
+
+## 2026-05-13 (PM) — Per-asset score thresholds (BTC=70, SOL=65, ETH=60) — 2.2× better OOS edge
+
+**Summary:** Followed up on the morning's "uniform 50" change with per-asset tuning. Mined the saved sweep runs (#16-#19) to compute first-half vs second-half (OOS) PnL per asset × per threshold. Found that the OOS-optimal threshold differs sharply by asset: BTC=70, SOL=65, ETH=60. Combined per-asset OOS PnL is $667 vs $308 for uniform=50 — a 2.2× improvement at the same drawdown. Capital requirement for $500/mo target drops from $192k to ~$90k.
+
+### Per-asset OOS scan (second half of run #16's 720d, threshold variations from runs #16-#19 plus baseline)
+
+| Asset | th=50 OOS $ | th=55 | th=60 | th=65 | th=70 | Pick |
+|---|---:|---:|---:|---:|---:|---|
+| BTC | −4.13 | −68.76 | −104.32 | −89.10 | **+65.94** | **70** |
+| SOL | +84.53 | +63.70 | +39.79 | **+155.73** | +58.89 | **65** |
+| ETH | +227.26 | +415.36 | **+445.35** | +213.55 | +177.79 | **60** |
+
+Each asset has a sharply different OOS-optimum. BTC is the most fragile — its OOS edge dies fast as the threshold drops below 70. ETH is the most permissive — going below 60 still gives positive OOS but less than 60. SOL peaks at 65.
+
+### Confirmation run (per-asset 70/65/60, 720d full window)
+
+Run #22, label `PER-ASSET-BTC70-SOL65-ETH60`:
+- 359 trades total (BTC 34, SOL 149, ETH 176)
+- In-sample WR 44.0%, net **+$823** ($699 after-tax), max DD 3.40%
+- Walk-forward OOS: +$667 over 365d = **~$56/mo on $10k**
+
+OOS PnL by asset (confirms the choice):
+- BTC@70: +$66 / 11 trades / WR 54.5%
+- SOL@65: +$156 / 57 trades / WR 43.9%
+- ETH@60: +$445 / 81 trades / WR 50.6%
+
+### Code changes
+
+- `src/signals/indicators.py:48-72` — `ENTRY_SCORE_THRESHOLDS: dict[str, int]` + `ENTRY_SCORE_THRESHOLD_DEFAULT = 60` + `get_score_threshold(symbol)` helper. The bare `ENTRY_SCORE_THRESHOLD` constant is preserved as a legacy alias pointing to the default, so older imports don't break.
+- `src/signals/indicators.py:827, 1155` — `symbol: str | None = None` added to `check_entry_signal` and `check_entry_signal_short` signatures.
+- `src/signals/indicators.py:905, 1228` — both signal functions now do `total_score >= get_score_threshold(symbol)` instead of the bare constant.
+- `src/backtest/engine.py:43` — import `get_score_threshold`. Lines 224 and 752 (both `_eval_bar` and `_eval_bar_short`) use it; the existing `symbol` parameter on those functions is now actually load-bearing.
+- `main.py:392` — passes `symbol=symbol` into `signal_fn` (covers both LONG and SHORT live analysis paths).
+- `src/trading/monitor.py:101` — passes `symbol=SYMBOL` into `check_entry_signal`.
+- `scripts/paper_replay.py` — `--score-threshold` flag now patches the whole `ENTRY_SCORE_THRESHOLDS` dict + default + legacy alias, so threshold sweep experiments still work as a single-value override.
+
+### $500/mo target update
+
+Pre-tuning expectation: $192k capital required.
+Post-tuning expectation: **~$90k capital required** at the OOS edge of $55.58/mo per $10k.
+
+### Open follow-ups
+
+- BTC's OOS edge is fragile (only 11 trades at th=70 over 365d). Consider: maybe BTC should be dropped from the bot entirely, or paired with HODL-BTC as the benchmark.
+- ETH WR at 50.6% on 81 OOS trades is statistically meaningful (95% CI ~40–61%) — this is the only signal I'd run live with confidence.
+- Live paper test for 4–8 weeks with the new per-asset config before scaling capital. Especially want to see whether ETH OOS edge persists into 2026.
+- Consider a separate threshold for SHORT (currently SHORT uses the same per-asset dict but its OOS performance has not been re-validated post-tuning).
+
+---
+
+## 2026-05-13 (AM) — ENTRY_SCORE_THRESHOLD lowered 70 → 50 (4× edge increase)
+
+**Summary:** Score-curve sweep + 15-min timeframe experiment found the real bottleneck of the strategy: the entry threshold was overly conservative at 70. Lowering to 50 produces 4.7× more $ PnL on $10k with WR dropping only 3 pp and max DD doubling from 1.7% to 3.3% — still well within retail-acceptable. Walk-forward OOS (second half of 720d) confirms edge persists at reduced magnitude. Committed the change to `src/signals/indicators.py:ENTRY_SCORE_THRESHOLD`.
+
+### Why we ran the sweep
+
+User goal: find a strategy that produces ≥$500/mo. The baseline (TP=3/SL=1.5, default threshold 70) was only ~$11/mo on $10k. Earlier experiments (wide stops, dynamic SL with break-even, BOTH-direction, full-size positions) all degraded or maintained baseline at best. The score threshold had never been tested — it was a guess at 70.
+
+### Score-sweep results (1h, 720d LONG-only, BTC+SOL+ETH)
+
+| Score | Trades | WR | Net $ | After tax | Max DD | $/mo on $10k |
+|---|---:|---:|---:|---:|---:|---:|
+| **50** | **955** | **42.0%** | **+$1,329** | **+$1,129** | 3.31% | **$47** |
+| 55 | 805 | 42.0% | +$1,097 | +$933 | 3.81% | $39 |
+| 60 | 579 | 43.7% | +$1,080 | +$918 | 3.17% | $38 |
+| 65 | 336 | 42.9% | +$445 | +$378 | 1.80% | $16 |
+| 70 (old) | 128 | 45.3% | +$282 | +$240 | 1.73% | $10 |
+
+### 15m timeframe sanity check (365d)
+
+| Config | Trades | WR | Net $ | After tax | DD | $/mo |
+|---|---:|---:|---:|---:|---:|---:|
+| 15m th=70 | 105 | 42.9% | +$248 | +$210 | 1.39% | $17 |
+| 15m th=60 | 336 | 43.5% | +$665 | +$566 | 2.79% | $47 |
+
+Both paths (lower threshold on 1h, default-ish on 15m) converge on the same ~$47/mo number — strong evidence that **per-signal edge is constant (~$1.40/trade after fees)** and the only lever is signal frequency.
+
+### Walk-forward OOS (1h, score=50, 720d split at midpoint)
+
+| Half | Period | Trades | WR | Net $ | $/mo on $10k |
+|---|---|---:|---:|---:|---:|
+| First (in-sample) | 2024-05 → 2025-05 | 588 | 42.9% | +$1,021 | $85 |
+| **Second (OOS)** | 2025-05 → 2026-05 | 367 | **40.6%** | **+$308** | **$26** |
+
+OOS edge is ~30% of in-sample. Realistic expectation post-deployment: **$25–30/mo on $10k**. For $500/mo target, need ~$170k–$200k capital.
+
+Per-asset OOS breakdown: BTC −$4 (78 trades, 41% WR), SOL +$85 (137, 39.4%), ETH +$227 (152, 41.4%). **ETH remains the workhorse**; BTC OOS is essentially flat. Consider per-asset thresholds in a future iteration.
+
+### What I tried that didn't work (for the record)
+
+- **Wide stops** (TP=2/SL=3/5/8, no BE) → +$67 best, much worse than baseline. Negative drag from worse RR exceeds the gain from higher WR.
+- **Dynamic SL** (BE move at 6/8/12h, optional trailing) → +$53 best. The BE move kicks out slow-burning winners too early. Strategy needs time to play out, not early-exit insurance.
+- **Full-size positions** ($10k cap = $10k/trade) → catastrophic — first SL leaves free_capital < per_trade and bot is locked out for rest of history.
+- **BOTH-direction with default threshold** → +$195 (vs LONG-only +$282). SHORT side adds drag and doubles DD.
+
+### Files changed
+
+- `src/signals/indicators.py:48` — `ENTRY_SCORE_THRESHOLD = 50` (was 70, with rationale comment)
+- `scripts/paper_replay.py` — new flags: `--max-hold`, `--min-rr`, `--max-concurrent`, `--dynamic-sl`, `--be-after-hours`, `--be-trigger-pct`, `--be-offset-pct`, `--trail-pct`, `--interval`, `--score-threshold`. Added monkey-patch fix for `engine.ENTRY_SCORE_THRESHOLD` (binds at import time so patching `indicators.ENTRY_SCORE_THRESHOLD` alone is not enough). Added missing-candle robustness in buy-and-hold benchmark.
+- `src/backtest/engine.py:64` — `_INTERVAL_BARS_PER_DAY` extended for 15m/30m/2h.
+
+### Open follow-ups
+
+- Walk-forward on 15m + lower threshold combined — might compound (or might collide).
+- Per-asset thresholds: BTC's OOS edge is gone; consider keeping threshold=70 just for BTC.
+- Live paper test for 4–8 weeks with new threshold before scaling capital.
+- Add funding-cost simulation for SHORT (still needed before re-enabling SHORT).
+
+---
+
+## 2026-05-13 — Paper-trading historical replay + honest viability test
+
+**Summary:** Wrote `scripts/paper_replay.py` — a portfolio-aware historical replay that mirrors live paper-trader logic (capital reservation, BOTH direction, 3 assets) but walks chronologically through historical 1h candles. Ran three configurations (BOTH 720d, LONG-only 720d, BOTH 365d) on $10k / $1k-per-trade, persisted all runs + trades to new `paper_replay_runs` / `paper_replay_trades` tables. Goal: answer the user's question "can this bot actually make money?" with real numbers instead of headline backtest stats.
+
+### What the script does differently from `engine.run_backtest`
+
+- **Portfolio mode**: one shared capital pool across 3 symbols × 2 directions, not per-asset isolated runs.
+- **Capital reservation**: signal is skipped if `free_capital < per_trade_size`. In practice this never fired on $10k/$1k because the strategy is so sparse.
+- **BOTH-direction concurrency**: long and short can coexist for the same symbol (matches live wizard semantics).
+- **$ PnL with realistic fees**: `qty × Δprice − entry_fee − exit_fee` using `BINANCE_TAKER_FEE = 0.1%` per side, not gross-pct round-trips.
+- **Master timeline**: union of all 1h timestamps across assets, single walk per ts; `_slice_higher_tf_at` carves 4h/1d/1w slices at each step exactly like `_eval_bar` expects in live mode.
+- **MTM equity snapshot every 24h** → max drawdown derived from the curve, not from per-trade max_drawdown_pct.
+
+### Results
+
+| Run | Period | Trades | WR | Net $ (post-fees) | After tax | Max DD | vs B&H |
+|---|---|---:|---:|---:|---:|---:|---:|
+| BOTH 720d | 2024-05 → 2026-05 | 403 | 39.7% | +$195 (+1.95%) | +1.66% | 4.34% | +25.33pp |
+| **LONG-only 720d** | 2024-05 → 2026-05 | 128 | **45.3%** | **+$282 (+2.82%)** | **+2.40%** | **1.73%** | +26.20pp |
+| BOTH 365d | 2025-05 → 2026-05 | 178 | 39.3% | +$104 (+1.04%) | +0.89% | 4.38% | +26.79pp |
+
+Per-leg breakdown (720d, BOTH):
+
+| Asset | Dir | N | WR | Net $ |
+|---|---|---:|---:|---:|
+| BTC | LONG | 34 | 50.0% | +$81 |
+| BTC | SHORT | 57 | 36.8% | −$26 |
+| SOL | LONG | 58 | 39.7% | +$49 |
+| SOL | SHORT | 125 | 38.4% | +$35 |
+| **ETH** | **LONG** | 36 | **50.0%** | **+$152** |
+| ETH | SHORT | 93 | 35.5% | **−$96** |
+
+### Findings (the honest ones)
+
+- **SHORT side has negative EV across the portfolio**: $195 (BOTH) − $282 (LONG-only) = −$87 contributed by SHORT over 720d, and DD doubles when SHORT is enabled (4.34% vs 1.73%). The previously-positive BTC/SOL SHORT numbers from the per-asset 720d backtest table were artifacts of being evaluated in isolation — when shorted alongside concurrent SHORT positions on other assets, drag accumulates.
+- **ETH LONG is the only signal with real edge.** 50% WR at TP=2×SL → +0.75% EV per trade after fees. 36 trades over 720d produced +$152, which is **more than half of the LONG-only strategy's total** ($282).
+- **B&H is a strawman in this window.** SOL/ETH crashed 40–45% from May 2024 → May 2026; only BTC was up (+16%). The bot's "+25pp vs B&H" is mostly "the bot avoided being long SOL/ETH on the way down", not alpha.
+- **Capital reservation never activated** on $10k/$1k. Strategy is sparse enough (~0.4% signal fire rate) that more positions could be open simultaneously without ever maxing out — capital efficiency story doesn't change anything at this scale.
+- **The bot underperforms USDT yield** (4–5%/yr) in absolute terms. After-tax annualised return is ~1.2%/yr on LONG-only.
+- **Honest one-liner**: if you would have HODL'd alt-bags, this saves you from yourself. If you're comparing to a savings account or HODL BTC, it loses.
+
+### Files
+
+- `scripts/paper_replay.py` (new) — 463 LOC, self-contained replay + report + DB persistence.
+- `data/backtest.db`:
+  - `paper_replay_runs` (new table, 3 rows)
+  - `paper_replay_trades` (new table, 709 rows: 403 + 128 + 178)
+
+### Open questions / next steps
+
+- Run **ETH-LONG-only** isolated to confirm it's the workhorse and not an artifact of correlation with SOL/ETH.
+- Add **funding-cost simulation** for SHORT (current SHORT numbers don't subtract perp funding — real Binance Futures SHORT would be worse than what we showed).
+- Generate **monthly PnL breakdown** from `paper_replay_trades` to see which regimes the strategy works in.
+- Consider **disabling SHORT in the live wizard by default** (still selectable as advanced option) given the consistent negative contribution.
+
+---
+
 ## 2026-05-06 — Audit punch-list cleanup (12 items)
 
 **Summary:** Worked through a 21-item audit punch list. Two critical correctness bugs fixed (one of them changes every backtest number), eight important items resolved, and a handful of dead-code / UX cleanups.

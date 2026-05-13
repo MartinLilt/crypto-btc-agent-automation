@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-ASSETS = ["BTCUSDT", "SOLUSDT", "ETHUSDT"]
+ASSETS = ["BTCUSDT", "SOLUSDT", "ETHUSDT", "LINKUSDT", "AVAXUSDT", "BNBUSDT"]
 TP_PCT = float(os.getenv("PAPER_TP_PCT", "3.0"))
 SL_PCT = float(os.getenv("PAPER_SL_PCT", "1.5"))
 

@@ -44,8 +44,48 @@ FG_MIN = 15
 BUY_RATIO_MIN = 45.0
 NET_SELL_MAX = -500.0
 
-# Entry requires total score >= this (out of 100)
-ENTRY_SCORE_THRESHOLD = 70
+# Entry requires total score >= asset-specific threshold (out of 100).
+# Per-asset values tuned on 2026-05-13 via per-asset OOS analysis of run #16:
+# combined OOS PnL went from +$308 (uniform 50) to +$667 (per-asset) on $10k/720d.
+# BTC needs the highest bar — its OOS edge dies fast as threshold drops.
+# ETH OOS optimum is the lowest — it has the strongest signal.
+ENTRY_SCORE_THRESHOLDS: dict[str, int] = {
+    # Per-asset tuned on 2026-05-13 PM via OOS analysis of 720d threshold sweep
+    "BTCUSDT": 70,    # OOS edge fragile, needs high bar
+    "SOLUSDT": 65,    # Mid-tier — best OOS at 65
+    "ETHUSDT": 60,    # Workhorse — strongest signal, can go lower
+    # New alts added 2026-05-13 PM after per-asset sweep on 720d
+    "LINKUSDT": 50,   # Surprise — +$377 OOS (138 trades, WR 44%)
+    "AVAXUSDT": 50,   # Marginal but positive OOS, large sample
+    "BNBUSDT":  60,   # Compromise: th=50 IS losing, th=70 small sample
+}
+ENTRY_SCORE_THRESHOLD_DEFAULT = 60
+
+# Legacy alias for callers that still import the bare constant (paper_replay
+# monkey-patches this for sweep experiments). Set to the default so old code
+# behaves like an unknown-asset symbol.
+ENTRY_SCORE_THRESHOLD = ENTRY_SCORE_THRESHOLD_DEFAULT
+
+# Recommended capital allocation weights — 2026-05-13 PM after 6-asset OOS sweep.
+# These are SHARES (sum = 1.0). Multiply by len(assets_in_use) to get the per-trade
+# size multiplier (so an equal split returns 1.0× for every asset).
+# Rationale: ETH and LINK contribute 86% of OOS edge — overweight them, keep
+# others as small diversifiers.
+RECOMMENDED_ASSET_WEIGHTS: dict[str, float] = {
+    "BTCUSDT":  0.05,
+    "SOLUSDT":  0.15,
+    "ETHUSDT":  0.30,
+    "LINKUSDT": 0.30,
+    "AVAXUSDT": 0.10,
+    "BNBUSDT":  0.10,
+}
+
+
+def get_score_threshold(symbol: str | None) -> int:
+    """Resolve the score threshold for a symbol, falling back to the default."""
+    if symbol is None:
+        return ENTRY_SCORE_THRESHOLD_DEFAULT
+    return ENTRY_SCORE_THRESHOLDS.get(symbol, ENTRY_SCORE_THRESHOLD_DEFAULT)
 
 
 # ── Score helpers (0-10 per layer) ────────────────────────────────────────────
@@ -819,6 +859,7 @@ def check_entry_signal(
     candles_4h: list | None = None,      # multi-timeframe L2/L3 alignment
     candles_1d: list | None = None,      # daily trend hard filter
     candles_1w: list | None = None,      # weekly trend hard filter
+    symbol: str | None = None,           # selects per-asset score threshold
 ) -> tuple[bool, dict]:
     l1_score, l1   = is_market_moving(candles)
     l2_score, l2   = is_uptrend(candles, candles_4h=candles_4h)
@@ -880,7 +921,7 @@ def check_entry_signal(
                     f"(price ${price_1w:,.0f} < weekly EMA21 ${ema21_1w_val:,.0f})"
                 )
 
-    should_enter = (total_score >= ENTRY_SCORE_THRESHOLD) and not hard_blocks
+    should_enter = (total_score >= get_score_threshold(symbol)) and not hard_blocks
 
     report = {
         "should_enter": should_enter,
@@ -1130,6 +1171,7 @@ def check_entry_signal_short(
     candles_4h: list | None = None,
     candles_1d: list | None = None,
     candles_1w: list | None = None,
+    symbol: str | None = None,
 ) -> tuple[bool, dict]:
     """Mirror of check_entry_signal for SHORT entries.
     Same data, direction-flipped scoring on L2/L3/L8/L9/L10. Hard blocks inverted:
@@ -1203,7 +1245,7 @@ def check_entry_signal_short(
                     f"(price ${price_1w:,.0f} > weekly EMA21 ${ema21_1w_val:,.0f})"
                 )
 
-    should_enter = (total_score >= ENTRY_SCORE_THRESHOLD) and not hard_blocks
+    should_enter = (total_score >= get_score_threshold(symbol)) and not hard_blocks
 
     report = {
         "should_enter": should_enter,

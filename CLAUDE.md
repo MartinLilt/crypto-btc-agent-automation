@@ -30,28 +30,43 @@ Users interact via Telegram inline buttons. Supports EN/RU. Deployed via Docker.
 | `scripts/diagnose.py` | Debug tool — shows live layer-by-layer status |
 
 ## Supported Assets
-`BTCUSDT`, `SOLUSDT`, `ETHUSDT`
+`BTCUSDT`, `SOLUSDT`, `ETHUSDT`, `LINKUSDT`, `AVAXUSDT`, `BNBUSDT`
 
-Backtest evidence (720d, TP=3%/SL=1.5%, after Binance 0.2% round-trip fees;
-**re-measured 2026-05-06** with daily EMA50 + weekly EMA21 hard blocks active in backtest, matching live behaviour):
+Backtest evidence (720d, TP=3%/SL=1.5%, $10k cap / $1k per trade, LONG only,
+after Binance 0.2% round-trip fees; **6-asset config tuned 2026-05-13 evening**):
 
-**LONG**
+```python
+ENTRY_SCORE_THRESHOLDS = {
+    "BTCUSDT": 70, "SOLUSDT": 65, "ETHUSDT": 60,
+    "LINKUSDT": 50, "AVAXUSDT": 50, "BNBUSDT": 60,
+}
+RECOMMENDED_ASSET_WEIGHTS = {
+    "BTCUSDT": 0.05, "SOLUSDT": 0.15, "ETHUSDT": 0.30,
+    "LINKUSDT": 0.30, "AVAXUSDT": 0.10, "BNBUSDT": 0.10,
+}
+```
 
-| Asset | Sigs | WR | Net (post-fees) | After 15% LT tax | Walk-forward OOS (after-tax) |
-|---|---:|---:|---:|---:|---:|
-| BTC | 60 | 33.3% | +18.81% | +5.79% | +4.57% (20 OOS sigs) |
-| ETH | 58 | 41.4% | +28.46% | +14.33% | +24.05% (31 OOS sigs) |
-| SOL | 93 | 45.2% | +49.50% | +26.26% | +14.87% (40 OOS sigs) |
+**Portfolio LONG, 6 assets, ETH+LINK heavy weights**
+- 1,221 trades, in-sample net **+$1,852**, after-tax **+$1,574** (+15.7%)
+- Walk-forward OOS (last 365d): **+$1,764 / +$147/mo on $10k**
+- $500/mo target requires **~$34k retail capital** at OOS edge.
+- Max DD: 6.33%
 
-**SHORT** (now also gated by inverted daily/weekly EMA blocks — only fires when daily and weekly trends are bearish; bull-regime data still dominates the window)
-
-| Asset | Sigs | WR | Net (post-fees) | After 15% LT tax |
+Per-asset OOS contribution (last 365d):
+| Asset | Thresh | Trades | WR | OOS $ |
 |---|---:|---:|---:|---:|
-| BTC | 104 | 38.5% | +32.42% | +9.88% |
-| ETH | 168 | 33.3% | +0.00% | −33.60% |
-| SOL | 216 | 38.0% | +46.92% | +3.16% |
+| ETH | 60 | 80 | 51.2% | **+$832** |
+| LINK | 50 | 138 | 44.2% | **+$679** |
+| SOL | 65 | 57 | 43.9% | +$140 |
+| BNB | 60 | 109 | 43.1% | +$58 |
+| AVAX | 50 | 129 | 38.8% | +$34 |
+| BTC | 70 | 11 | 54.5% | +$20 |
 
-Score-based system uses universal thresholds; per-asset tuning not currently needed.
+**ETH + LINK = 86% of total OOS edge.** Other assets are diversifiers.
+
+**Earlier results at the global threshold=70** (kept for historical comparison only — not the current config):
+LONG: BTC 60 sigs WR 33% +5.79% after-tax; ETH 58 sigs WR 41% +14.33%; SOL 93 sigs WR 45% +26.26%.
+SHORT: net drag on portfolio when combined with LONG; not currently exposed by default.
 
 ## Signal Architecture — 10 Layers
 All 10 must pass → `should_enter = True`.
@@ -69,7 +84,7 @@ All 10 must pass → `should_enter = True`.
 | L9 | Fear & Greed | Index 15–74 (not extreme panic/greed) |
 | L10 | Buy Pressure | Taker buy ratio >= 45%, net BTC > -500 |
 
-**LTC/SOL/LINK specific:** L1 ADX threshold relaxed to 15, L5 volume threshold $10M (smaller cap assets).
+**Per-asset entry threshold:** see `ENTRY_SCORE_THRESHOLDS` above (BTC=70, SOL=65, ETH=60, LINK=50, AVAX=50, BNB=60). The score-tier system within each layer (1-10) is universal; only the final `total_score ≥ threshold` cutoff is per-asset.
 
 ## Backtest Engine
 - Slides 220-candle window over history

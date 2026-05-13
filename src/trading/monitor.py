@@ -98,6 +98,7 @@ async def scanner_loop(app):
                 candles_4h=candles_4h,
                 candles_1d=candles_1d,
                 candles_1w=candles_1w,
+                symbol=SYMBOL,
             )
 
             total_score = report.get("total_score", 0)

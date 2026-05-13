@@ -41,6 +41,9 @@ ASSETS = [
     ("₿ Bitcoin",  "BTCUSDT"),
     ("◎ Solana",   "SOLUSDT"),
     ("Ξ Ethereum", "ETHUSDT"),
+    ("⛓ Chainlink",  "LINKUSDT"),
+    ("△ Avalanche",  "AVAXUSDT"),
+    ("◆ BNB",        "BNBUSDT"),
 ]
 
 # Default trading params (no user input needed)
@@ -389,6 +392,7 @@ async def _run_analysis(query, context, lang: str):
             candles_4h=candles_4h,
             candles_1d=candles_1d,
             candles_1w=candles_1w,
+            symbol=symbol,
         )
 
         ai_result = None

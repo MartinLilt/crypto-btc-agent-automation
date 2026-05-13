@@ -41,6 +41,7 @@ from src.signals.indicators import (
     check_sell_pressure,
     calculate_ema,
     ENTRY_SCORE_THRESHOLD,
+    get_score_threshold,
     _score_l1,
     _score_l5,
 )
@@ -61,7 +62,7 @@ LT_TAX_RATE       = 0.15  # Lithuania 15% capital gains tax (≤€120k/year, 20
 
 # ── 1. Data fetching ──────────────────────────────────────────────────────────
 
-_INTERVAL_BARS_PER_DAY = {"1h": 24, "4h": 6, "1d": 1}
+_INTERVAL_BARS_PER_DAY = {"15m": 96, "30m": 48, "1h": 24, "2h": 12, "4h": 6, "1d": 1}
 
 
 def _fetch_candles_full(symbol: str, days: int, interval: str = "1h") -> list:
@@ -221,7 +222,7 @@ def _eval_bar(candles_window: list, ts_ms: int,
     daily_block = _daily_block_long(candles_1d)
     weekly_block = _weekly_block_long(candles_1w)
 
-    all_pass = ((total_score >= ENTRY_SCORE_THRESHOLD)
+    all_pass = ((total_score >= get_score_threshold(symbol))
                 and not rsi_block and not adx_block
                 and not daily_block and not weekly_block)
 
@@ -749,7 +750,7 @@ def _eval_bar_short(candles_window: list, ts_ms: int,
     daily_block = _daily_block_short(candles_1d)
     weekly_block = _weekly_block_short(candles_1w)
 
-    all_pass = ((total_score >= ENTRY_SCORE_THRESHOLD)
+    all_pass = ((total_score >= get_score_threshold(symbol))
                 and not rsi_block and not adx_block
                 and not daily_block and not weekly_block)
 
