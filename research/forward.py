@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 from datetime import datetime, timezone
@@ -22,8 +23,12 @@ import pandas as pd
 
 from research.book import book_series, target_weights
 
-STATE = pathlib.Path(__file__).parent / "forward_state.json"
-CAPITAL0 = 10_000.0
+# On Railway / a server, point this at the mounted persistent volume so the
+# track record survives redeploys. Default = next to this file (local dev).
+STATE = pathlib.Path(os.getenv("FORWARD_STATE_PATH",
+                               str(pathlib.Path(__file__).parent /
+                                   "forward_state.json")))
+CAPITAL0 = float(os.getenv("FORWARD_CAPITAL", "10000"))
 
 
 def _load() -> dict:
