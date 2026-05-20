@@ -3,3 +3,8 @@ python-telegram-bot[job-queue]==21.9
 python-dotenv
 openai
 redis
+
+# Used by the research/ forward-tracker (Railway tracker service)
+numpy
+pandas
+requests

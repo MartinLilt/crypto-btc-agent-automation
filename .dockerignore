@@ -24,6 +24,10 @@ logs/
 *.log
 bot.log
 
+# Research pickle cache (30MB regenerable from Binance API on first run)
+research/cache/
+research/forward_state*.json.bak
+
 # Dev / VCS
 .git/
 .gitignore
