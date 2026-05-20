@@ -4,6 +4,142 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-05-20 — Deployed book hardened: $50M liquidity floor; forward restarted
+
+After the hardening sweep (`research/hardened.py`), picked the Pareto-best
+defense: **top_k=3 (unchanged) + $50M/30d quote-volume floor on the rotation
+universe, no hard stop** (stop didn't pay — see table below). Applied to the
+deployed `research/book.py` via a new `S.xsec_momentum_hardened` in
+`research/strategies.py` (qv-aware). Sanity-checked: deployed book now
+reproduces the MIDDLE numbers exactly (OOS CAGR 19.3%, Sharpe 1.18, DD 16.3%).
+
+Forward tracker restarted: old `forward_state.json` archived to
+`forward_state_top3_no-liq_2026-05-17.json.bak`, new inception **2026-05-20**.
+Today's hardened picks: rotation BTC/BNB/DOGE (LINK/ATOM excluded by liq
+floor), carry BTC/ETH/BNB.
+
+Tradeoff this represents (all OOS):
+| variant | CAGR | Sharpe | DD | alt-70% tail (€) | MC P(loss) |
+|---|--:|--:|--:|--:|--:|
+| top3 no defenses (was deployed) | 23.6% | 1.42 | 17.6% | €3905 | 10.7% |
+| **top3 + $50M liq (now deployed)** | **19.3%** | **1.18** | **16.3%** | **€2825** | **9.4%** |
+| top5+stop+liq (full hardening) | 14.8% | 0.97 | 20.1% | €2724 | 14.7% |
+
+Buys ~€1080 of tail protection and a better bad-tail (MC 5-pct −6.6→−5.1%)
+for ~€430/yr in expected return — a math-positive insurance trade.
+
+---
+
+## 2026-05-19 — Stress test of the 50/50 book (defensive analysis)
+
+`research/stress.py`: crisis windows, cost/slippage, carry tail, Monte-Carlo
+bootstrap, single-alt collapse, survivorship bound. Findings: book sidesteps
+major crashes via the BTC regime gate (China-ban/LUNA/FTX all ≤−1.5% vs BTC
+−22…−51%); carry is additive not load-bearing (−30% shock or carry→0 both
+survivable); survivorship NOT inflating cons-12 (force-incl. delisted didn't
+hurt). MC 10k×1yr: median +26%, 5th pctile −6.8%, P(loss) 10.5%, P(DD>30%)
+0.2% — asymmetric, low blow-up. Two real vulnerabilities: cost-sensitivity
+(Sharpe 1.42→0.96 at 80bps ⇒ liquid names + limit orders) and single held-alt
+overnight −70% (~−13% book day, ~39% tail DD ⇒ mitigate top_k=5 + per-pos
+stop + liquidity floor). Honest €10k risk: bad year ≈−€700, bad DD ≈−€2000,
+alt-collapse tail ≈−€4000. Research only; production untouched.
+
+---
+
+## 2026-05-19 — Extended search converged: no strategy beats the 50/50 book
+
+`research/more.py`. Tested 6 more families vs *incremental* value to the
+deployed book (OOS Shrp 1.42 / CAGR 23.6% / DD 17.6%): TSMOM, multi-factor XS,
+let-winners-run, BTC lead-lag all redundant with the rotation sleeve (same
+trend bet → more DD, no Sharpe). Two market-neutral RV attempts (cross-sec
+funding best-N, ETH/BTC pair MR) **fail OOS** (best-N: IS Shrp 4.07 → OOS
+−3.24 — textbook overfit). Conclusion: search converged. Robust blocks =
+vol-targeted XS momentum + fixed long-only funding carry only. Ceiling of
+public-data spot ≈ Shrp 1.4 / 24% CAGR / 18% DD OOS. Next lever is capital +
+the forward test, not another strategy. Research only; production untouched.
+
+---
+
+## 2026-05-19 — L9 ablation: pattern-mining lead REFUTED (L9 is valuable, not a drag)
+
+Tested the 2026-05-18 lead directly. `research/ablate_l9.py` runs the canonical
+6-asset ETH/LINK-heavy config (LONG, tp3/sl1.5, $10k/$1k, per-asset thresholds)
+with L9 real vs frozen to 7 / 5, on 365d and 720d.
+
+| window | L9 real | L9=7 | L9=5 |
+|---|---|---|---|
+| 365d | $1694 net, $3.23/trade, DD 3.8% | $1215, $2.05 | $810, $1.53 |
+| 720d | $3480 net, $2.88/trade | $2260, $1.60 | $2010, $1.65 |
+
+Freezing L9 cuts net 28–52% and per-trade expectancy 36–53% and raises DD, on
+**both** windows. **L9 is one of the most valuable layers (~$1.2–1.5k of the
+~$3.5k IS edge), not a drag.** Why patterns.py disagreed: it tested *isolated
+single-bar* patterns vs raw forward return; the bot's L9 is a graded,
+4h-confirmed, streak-penalised score evaluated only when the other 9 layers
+already align — a contextual confirmation, not a standalone predictor. Lesson:
+ablate the real mechanism, not a proxy. The 2026-05-18 "neutralise L9"
+recommendation is **withdrawn**. Repro: `python -m research.ablate_l9`.
+
+---
+
+## 2026-05-18 — Candlestick pattern mining: no goldmine (honest negative result)
+
+> **CORRECTION (2026-05-19):** the "L9 likely a drag → neutralise" lead below
+> was tested by ablation and **refuted** — see the 2026-05-19 entry. L9 is
+> valuable. The pattern-mining result itself (isolated patterns = noise) stands.
+
+
+`research/patterns.py`: 28 patterns × 6 majors (1h) + 24 × 30 (1d), forward
+excess over base, IS/OOS, 2000-shuffle permutation null, after 0.2% cost,
+multiple-testing accounted. **Result: 1d → 0 survivors; 1h → only `big_green`
+(momentum-ignition candle), thin (+0.05–0.10% net OOS).** All classic reversal
+patterns ≈ 0 or negative after cost, robustly. Confirms: crypto edge is
+momentum/trend persistence (the rotation book), not candle shapes. Concrete
+lead for the live bot: L9 `detect_candle_patterns` rewards bullish reversal
+shapes that test ~0/negative → likely a drag; candidate to neutralise/replace
+with a momentum-continuation signal. Research only; production untouched.
+
+---
+
+## 2026-05-17 — Exhaustive strategy search: rotation + funding-carry book (~2–3× the bot's edge)
+
+**Summary:** User asked for €500/mo on €10k (=5%/mo ≈ 80% CAGR). Built a fresh
+vectorized research stack (`research/`) — no-lookahead engine, realistic costs,
+60/40 IS/OOS split — and swept strategy families on 6yr of data (30-coin daily
+universe + 1h/4h majors + 8h funding history).
+
+**Honest verdict: 5%/mo on €10k is not achievable at tolerable risk** — it forces
+~3× leverage and ~50%+ drawdowns. But a genuinely better book was found:
+
+- **Cross-sectional alt-momentum rotation** (the "buy movers, ride the spike"
+  idea, done right): OOS robust — **128/128 parameter cells OOS-positive**,
+  median 31% CAGR. IS→OOS param corr = −0.33 → use robust central params, do
+  NOT optimize the backtest.
+- **Delta-neutral funding carry** (long spot / short perp): structural,
+  market-neutral, ~6–10%/yr at 1–8% DD — stacks (uncorrelated).
+- **Combined 50/50 book:** OOS CAGR 26.6%, maxDD 16%, Sharpe 1.46.
+  **70/30:** 35.4% CAGR, 22% DD. After honesty haircuts (survivorship −23%,
+  live −30%): ~18–25% CAGR realistic ≈ ~€200/mo on €10k at ~20% DD vs the
+  current bot's ~€136/mo at 6% DD (but the bot's low DD is just "sat in cash"
+  through the bear; this book has real positive expectancy).
+- €500/mo at the safe blended edge needs **~€25–30k capital**.
+
+User chose the **Conservative 50/50** book. Built it deployable:
+`research/book.py` (rotation lookback25/hold5/topk3, vol-target 30%/1.5x +
+gated carry, 50/50) and `research/forward.py` — a persistent forward-paper
+tracker with a fixed inception date. Initialized 2026-05-17 @ €10k; real
+forward track record accumulates from the next daily bar (context backfill OOS
+CAGR 22.6%, explicitly NOT a forward claim). Daily driver:
+`python -m research.forward step` (wire to cron / a daily routine).
+
+Artifacts: `research/{data,engine,strategies,run,book,forward}.py`,
+`research/RESULTS.md`, `research/cache/*.pkl`, `research/forward_state.json`.
+Reproduce research: `python -m research.run all`. Live bot's production code
+(`main.py`, `src/`) untouched — next step is surfacing the book in the
+Telegram UI after the forward test proves out (~2–3 months).
+
+---
+
 ## 2026-05-13 (Evening) — 6-asset config + ETH/LINK overweight allocation — $147/mo OOS on $10k
 
 **Summary:** Expanded supported asset universe from 3 (BTC/SOL/ETH) to 6 (+ LINK/AVAX/BNB), with per-asset OOS-tuned thresholds for the new alts. LINK turned out to be a second workhorse alongside ETH — combined they contribute 86% of OOS edge. Added `RECOMMENDED_ASSET_WEIGHTS` to overweight the workhorses. Capital required for $500/mo target dropped from $90k → $34k.

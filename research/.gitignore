@@ -1,0 +1,8 @@
+# Regenerable Binance klines + funding pickle cache (run data.py to refetch)
+cache/
+
+# Run logs (regenerated each invocation)
+*.log
+
+# Archived prior forward states
+*.bak
