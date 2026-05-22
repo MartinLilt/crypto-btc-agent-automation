@@ -4,6 +4,31 @@ Reverse-chronological. Add entry at top when significant changes land.
 
 ---
 
+## 2026-05-21 — Ops check + cron schedule docs fix
+
+Weekly-style health check, day 1 of forward test.
+
+- **bot** ● Online, polling Telegram every ~10s, 200 OK. EU West region OK.
+- **tracker** cron ● Completed; volume mounted at `/app/data` (0.1 / 4.9 GB).
+- **Forward record:** inception 2026-05-20, capital €10,000. Day 1 equity
+  €9,973.25 → **−0.27%** (well within ±1.6% daily 1σ; annualised reading
+  ignored — single-day artifact). Current DD 0.0%.
+- **Today's book (2026-05-21):** rotation SOL/BNB/DOGE @ 18.49% each
+  (vol-scaler 1.11); carry BTC/ETH/BNB delta-neutral @ 16.67% each.
+
+**Docs fix only** (no code/config change to the running experiment):
+discovered the tracker cron actually runs `*/5 * * * *` on Railway, not the
+`daily 00:05 UTC` claimed in `OPERATING.md`. Cron is idempotent — logs
+`no new bar since YYYY-MM-DD` and exits until a new daily Binance bar
+closes — so the polling interval is harmless. Corrected the "Where things
+live" row and the "no new bar since..." troubleshooting row (now: expected
+within a UTC day, only flag if >48h). Commit `28dd15f` on `main`.
+
+Production code & 50/50 book untouched per [[GO_LIVE]] rules. Next planned
+check: weekly, per `OPERATING.md`.
+
+---
+
 ## 2026-05-20 — Deployed book hardened: $50M liquidity floor; forward restarted
 
 After the hardening sweep (`research/hardened.py`), picked the Pareto-best
