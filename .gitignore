@@ -13,5 +13,8 @@ __pycache__/
 .env
 *.local
 
+# Runtime state (paper trading balance/position)
+state/
+
 # OS
 .DS_Store

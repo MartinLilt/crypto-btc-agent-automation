@@ -1,0 +1,130 @@
+"""Binance market-data API module.
+
+Thin, dependency-light wrapper over Binance's public REST endpoints. Pulls the
+data our strategy will need for LTC (candles, latest price, 24h stats). No API
+keys required — these endpoints are public. Trading (signed) calls live in a
+separate module later.
+
+Docs: https://developers.binance.com/docs/binance-spot-api-docs
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+import requests
+
+from .config import config
+
+# Public production API — market data is the same for everyone and needs no key.
+# (Testnet is only relevant for placing orders, handled by the trading module.)
+BASE_URL = "https://api.binance.com"
+
+_TIMEOUT = 10  # seconds
+
+
+class BinanceAPIError(RuntimeError):
+    """Raised when Binance returns a non-2xx response."""
+
+
+def _get(path: str, params: dict | None = None) -> object:
+    url = f"{BASE_URL}{path}"
+    try:
+        resp = requests.get(url, params=params, timeout=_TIMEOUT)
+    except requests.RequestException as exc:
+        raise BinanceAPIError(f"request to {url} failed: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise BinanceAPIError(
+            f"{path} -> HTTP {resp.status_code}: {resp.text[:200]}"
+        )
+    return resp.json()
+
+
+@dataclass(frozen=True)
+class Candle:
+    """One OHLCV candle (a Binance kline), typed and parsed."""
+
+    open_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    close_time: datetime
+
+    @classmethod
+    def from_kline(cls, k: list) -> "Candle":
+        return cls(
+            open_time=datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+            open=float(k[1]),
+            high=float(k[2]),
+            low=float(k[3]),
+            close=float(k[4]),
+            volume=float(k[5]),
+            close_time=datetime.fromtimestamp(k[6] / 1000, tz=timezone.utc),
+        )
+
+
+def get_price(symbol: str | None = None) -> float:
+    """Latest trade price for a symbol (default: configured SYMBOL)."""
+    symbol = symbol or config.symbol
+    data = _get("/api/v3/ticker/price", {"symbol": symbol})
+    return float(data["price"])
+
+
+def get_candles(
+    symbol: str | None = None,
+    interval: str | None = None,
+    limit: int | None = None,
+) -> list[Candle]:
+    """OHLCV candles for a symbol, oldest first.
+
+    Defaults come from .env (SYMBOL / INTERVAL / CANDLE_LIMIT). When `limit`
+    exceeds Binance's 1000-per-request cap, the history is fetched in pages
+    (walking backwards via endTime) so long-horizon backtests are possible —
+    e.g. a full year of 1h candles (~8760).
+    """
+    symbol = symbol or config.symbol
+    interval = interval or config.interval
+    limit = limit or config.candle_limit
+
+    if limit <= 1000:
+        raw = _get(
+            "/api/v3/klines",
+            {"symbol": symbol, "interval": interval, "limit": limit},
+        )
+        return [Candle.from_kline(k) for k in raw]
+
+    # Page backwards: each request ends just before the earliest bar we have.
+    collected: list[list] = []
+    end_time: int | None = None
+    while len(collected) < limit:
+        params = {"symbol": symbol, "interval": interval, "limit": 1000}
+        if end_time is not None:
+            params["endTime"] = end_time
+        batch = _get("/api/v3/klines", params)
+        if not batch:
+            break
+        collected = batch + collected
+        end_time = batch[0][0] - 1  # ms before the earliest open_time
+        if len(batch) < 1000:
+            break  # reached the start of available history
+
+    collected = collected[-limit:]
+    return [Candle.from_kline(k) for k in collected]
+
+
+def get_24h_stats(symbol: str | None = None) -> dict:
+    """Rolling 24h stats (price change, high/low, volume) for a symbol."""
+    symbol = symbol or config.symbol
+    data = _get("/api/v3/ticker/24hr", {"symbol": symbol})
+    return {
+        "symbol": data["symbol"],
+        "last_price": float(data["lastPrice"]),
+        "price_change_pct": float(data["priceChangePercent"]),
+        "high_24h": float(data["highPrice"]),
+        "low_24h": float(data["lowPrice"]),
+        "volume_24h": float(data["volume"]),
+    }

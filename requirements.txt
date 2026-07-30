@@ -1,2 +1,3 @@
-# stdlib-only for now — no external dependencies.
-# Add packages here as the project grows (e.g. python-binance, openai, python-telegram-bot).
+# Binance spot auto-trading MVP — dependencies.
+requests>=2.31        # HTTP client for Binance REST API
+python-dotenv>=1.0    # load .env config
