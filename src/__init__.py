@@ -1,0 +1,1 @@
+"""crypto-btc-agent-automation — base package."""

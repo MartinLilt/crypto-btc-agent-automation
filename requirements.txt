@@ -1,0 +1,2 @@
+# stdlib-only for now — no external dependencies.
+# Add packages here as the project grows (e.g. python-binance, openai, python-telegram-bot).
