@@ -1,0 +1,25 @@
+name: Deploy to Railway
+
+# CI/CD: every push to main redeploys the Grid-stream service on Railway.
+# One-time setup: add a repo secret RAILWAY_TOKEN (a Railway *project* token
+# from the crypto-btc-agent-automation project → Settings → Tokens).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service grid-stream --detach
