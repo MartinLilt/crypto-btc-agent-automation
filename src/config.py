@@ -76,6 +76,7 @@ class Config:
     bull_hold_pct: float       # capital fraction to buy-&-hold per coin in BULL
     telegram_bot_token: str    # Telegram bot token (results output); empty = off
     telegram_chat_id: str      # chat to send results to
+    database_url: str          # Postgres DSN; empty = JSON-file fallback
 
 
 config = Config(
@@ -134,4 +135,5 @@ config = Config(
     bull_hold_pct=float(os.getenv("BULL_HOLD_PCT", "0.15")),
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
     telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+    database_url=os.getenv("DATABASE_URL", "").strip(),
 )

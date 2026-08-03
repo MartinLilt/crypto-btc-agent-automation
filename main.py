@@ -34,6 +34,7 @@ def main() -> None:
         print()
 
     broker = get_grid_broker()
+    print(f"storage           : {broker.backend}")
     prices: dict[str, float] = {}
     # Enough 4h candles for the grid SMA AND the higher-TF regime (resampled).
     factor = tf_factor(config.interval, config.regime_interval)
@@ -149,7 +150,7 @@ def main() -> None:
             f"<b>🌊 Grid-stream</b> · {config.trading_mode.upper()} · {config.interval}",
             f"📊 Счёт: <b>{equity:.0f}</b> ({(equity/start-1)*100:+.2f}%) · кэш {broker.cash:.0f}",
             f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> · 🎉 Пир: {feast:.0f} ({(feast/start-1)*100:+.1f}%)",
-            f"🧺 {broker.total_bags} меш · 🟢 {n_holds} hold",
+            f"🧺 {broker.total_bags} меш · 🟢 {n_holds} hold · 🗄 {broker.backend}",
             f"🧭 {reg_line}",
             "",
             "<b>📦 Позиции (чего ждут):</b>",

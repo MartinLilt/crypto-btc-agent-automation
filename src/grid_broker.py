@@ -14,42 +14,30 @@ live stays user-gated as everywhere else.
 
 from __future__ import annotations
 
-import json
 import time
 
-from .config import STATE_DIR, config
-
-_STATE_DIR = STATE_DIR
-_STATE_FILE = _STATE_DIR / "grid_state.json"
+from .config import config
+from .store import get_store
 
 
 class GridBroker:
     mode = "paper"
 
     def __init__(self) -> None:
-        self.cash: float = config.paper_start_balance
-        self.realized: float = 0.0
-        self.positions: dict[str, list[dict]] = {}
-        self.holds: dict[str, dict] = {}   # per-coin buy-&-hold ride during BULL
-        self._load()
+        self.store = get_store()
+        s = self.store.load()
+        self.cash: float = s["cash"]
+        self.realized: float = s["realized"]
+        self.positions: dict[str, list[dict]] = s["positions"]
+        self.holds: dict[str, dict] = s["holds"]   # per-coin BULL buy-&-hold
+
+    @property
+    def backend(self) -> str:
+        return self.store.backend
 
     # ── persistence ──────────────────────────────────────────────────────
-    def _load(self) -> None:
-        if _STATE_FILE.exists():
-            d = json.loads(_STATE_FILE.read_text())
-            self.cash = d.get("cash", config.paper_start_balance)
-            self.realized = d.get("realized", 0.0)
-            self.positions = d.get("positions", {})
-            self.holds = d.get("holds", {})
-
     def save(self) -> None:
-        _STATE_DIR.mkdir(exist_ok=True)
-        _STATE_FILE.write_text(json.dumps({
-            "cash": self.cash,
-            "realized": self.realized,
-            "positions": self.positions,
-            "holds": self.holds,
-        }, indent=2))
+        self.store.save(self.cash, self.realized, self.positions, self.holds)
 
     # ── orders ───────────────────────────────────────────────────────────
     def bags(self, symbol: str) -> list[dict]:
@@ -61,6 +49,8 @@ class GridBroker:
         bag = {"entry": price, "qty": qty, "cost": unit_usdt, "time": time.time()}
         self.bags(symbol).append(bag)
         self.cash -= unit_usdt
+        self.store.log_trade(symbol=symbol, side="BUY", kind="bag",
+                             price=price, qty=qty, usdt=unit_usdt, pnl=0.0)
         return bag
 
     def sell_bag(self, symbol: str, index: int, price: float) -> float:
@@ -71,6 +61,8 @@ class GridBroker:
         self.cash += proceeds
         pnl = proceeds - bag["cost"]
         self.realized += pnl
+        self.store.log_trade(symbol=symbol, side="SELL", kind="bag",
+                             price=price, qty=bag["qty"], usdt=proceeds, pnl=pnl)
         return pnl
 
     # ── BULL hold-allocation (ride the trend) ────────────────────────────
@@ -79,9 +71,12 @@ class GridBroker:
 
     def buy_hold(self, symbol: str, price: float, amount_usdt: float) -> None:
         fee = amount_usdt * config.fee_rate
-        self.holds[symbol] = {"entry": price, "qty": (amount_usdt - fee) / price,
+        qty = (amount_usdt - fee) / price
+        self.holds[symbol] = {"entry": price, "qty": qty,
                               "cost": amount_usdt, "time": time.time()}
         self.cash -= amount_usdt
+        self.store.log_trade(symbol=symbol, side="BUY", kind="hold",
+                             price=price, qty=qty, usdt=amount_usdt, pnl=0.0)
 
     def sell_hold(self, symbol: str, price: float) -> float:
         h = self.holds.pop(symbol)
@@ -90,6 +85,8 @@ class GridBroker:
         self.cash += proceeds
         pnl = proceeds - h["cost"]
         self.realized += pnl
+        self.store.log_trade(symbol=symbol, side="SELL", kind="hold",
+                             price=price, qty=h["qty"], usdt=proceeds, pnl=pnl)
         return pnl
 
     def hold_value(self, symbol: str, price: float) -> float:

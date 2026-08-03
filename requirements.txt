@@ -1,3 +1,4 @@
 # Binance spot auto-trading MVP — dependencies.
-requests>=2.31        # HTTP client for Binance REST API
-python-dotenv>=1.0    # load .env config
+requests>=2.31          # HTTP client for Binance REST API
+python-dotenv>=1.0      # load .env config
+psycopg[binary]>=3.1    # Postgres driver (durable state + trade history)
