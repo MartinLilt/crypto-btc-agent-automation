@@ -30,6 +30,7 @@ class GridBroker:
         self.cash: float = config.paper_start_balance
         self.realized: float = 0.0
         self.positions: dict[str, list[dict]] = {}
+        self.holds: dict[str, dict] = {}   # per-coin buy-&-hold ride during BULL
         self._load()
 
     # ── persistence ──────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ class GridBroker:
             self.cash = d.get("cash", config.paper_start_balance)
             self.realized = d.get("realized", 0.0)
             self.positions = d.get("positions", {})
+            self.holds = d.get("holds", {})
 
     def save(self) -> None:
         _STATE_DIR.mkdir(exist_ok=True)
@@ -46,6 +48,7 @@ class GridBroker:
             "cash": self.cash,
             "realized": self.realized,
             "positions": self.positions,
+            "holds": self.holds,
         }, indent=2))
 
     # ── orders ───────────────────────────────────────────────────────────
@@ -70,22 +73,48 @@ class GridBroker:
         self.realized += pnl
         return pnl
 
+    # ── BULL hold-allocation (ride the trend) ────────────────────────────
+    def has_hold(self, symbol: str) -> bool:
+        return symbol in self.holds
+
+    def buy_hold(self, symbol: str, price: float, amount_usdt: float) -> None:
+        fee = amount_usdt * config.fee_rate
+        self.holds[symbol] = {"entry": price, "qty": (amount_usdt - fee) / price,
+                              "cost": amount_usdt, "time": time.time()}
+        self.cash -= amount_usdt
+
+    def sell_hold(self, symbol: str, price: float) -> float:
+        h = self.holds.pop(symbol)
+        gross = h["qty"] * price
+        proceeds = gross - gross * config.fee_rate
+        self.cash += proceeds
+        pnl = proceeds - h["cost"]
+        self.realized += pnl
+        return pnl
+
+    def hold_value(self, symbol: str, price: float) -> float:
+        h = self.holds.get(symbol)
+        return h["qty"] * price if h else 0.0
+
     # ── valuation ────────────────────────────────────────────────────────
     def coin_value(self, symbol: str, price: float) -> float:
-        return sum(b["qty"] * price for b in self.bags(symbol))
+        return sum(b["qty"] * price for b in self.bags(symbol)) + self.hold_value(symbol, price)
 
     def equity(self, prices: dict[str, float]) -> float:
-        """Mark-to-market: cash + every bag at the current price."""
-        held = sum(self.coin_value(s, prices.get(s, 0.0)) for s in self.positions)
+        """Mark-to-market: cash + every bag AND hold at the current price."""
+        symbols = set(self.positions) | set(self.holds)
+        held = sum(self.coin_value(s, prices.get(s, 0.0)) for s in symbols)
         return self.cash + held
 
-    def feast_value(self, tp_pct: float) -> float:
-        """Equity if every frozen bag eventually sells at its take-profit."""
+    def feast_value(self, tp_pct: float, prices: dict[str, float] | None = None) -> float:
+        """Equity if every frozen bag sells at its TP; holds valued at market."""
+        prices = prices or {}
         pending = 0.0
         for bags in self.positions.values():
             for b in bags:
                 pending += b["qty"] * b["entry"] * (1 + tp_pct / 100) * (1 - config.fee_rate)
-        return self.cash + pending
+        holds = sum(self.hold_value(s, prices.get(s, 0.0)) for s in self.holds)
+        return self.cash + pending + holds
 
     @property
     def total_bags(self) -> int:

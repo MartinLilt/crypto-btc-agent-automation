@@ -56,41 +56,56 @@ def main() -> None:
         # market regime for this coin, measured on the higher timeframe
         regime = detect_regime(resample(candles, factor)).regime
         regimes[coin] = regime
+        c = coin.replace("USDT", "")
+        note = ""
 
-        # regime-adaptive plan: what to sell, whether to buy
-        sells, do_buy = plan_actions(regime, broker.bags(coin), price, broker.cash,
-                                     up, p, config.regime_adaptive)
-        sold = 0
-        for i in sorted(sells, reverse=True):
-            broker.sell_bag(coin, i, price)
-            sold += 1
-        added = False
-        if do_buy:
-            broker.buy(coin, price, p.unit_usdt)
-            added = True
+        if config.regime_adaptive and regime is Regime.BULL:
+            # BULL: ride a buy-&-hold allocation instead of gridding.
+            if not broker.has_hold(coin):
+                amt = min(config.bull_hold_pct * config.paper_start_balance, broker.cash)
+                if amt >= p.unit_usdt:
+                    broker.buy_hold(coin, price, amt)
+                    note = " HOLD-BUY"
+                    actions.append(f"🟢 {c}: BULL — bought hold ${amt:.0f} to ride")
+            else:
+                note = " HOLDING"
+        else:
+            # left BULL → liquidate the ride (take the bull gains)
+            if broker.has_hold(coin):
+                pnl = broker.sell_hold(coin, price)
+                note = f" HOLD-SELL {pnl:+.0f}"
+                actions.append(f"🏁 {c}: exited BULL hold, pnl {pnl:+.0f}")
+            # NEUTRAL / BEAR → adaptive grid
+            sells, do_buy = plan_actions(regime, broker.bags(coin), price, broker.cash,
+                                         up, p, config.regime_adaptive)
+            sold = 0
+            for i in sorted(sells, reverse=True):
+                broker.sell_bag(coin, i, price); sold += 1
+            if do_buy:
+                broker.buy(coin, price, p.unit_usdt); note += " BUY"
+            if sold:
+                note = f" SOLD {sold}" + note
+                actions.append(f"💰 {c}: sold {sold} bag(s) @ {price:g}")
+            if "BUY" in note and "HOLD" not in note:
+                actions.append(f"🛒 {c}: bought a bag @ {price:g}")
 
         n = len(broker.bags(coin))
-        note = (" SOLD %d" % sold if sold else "") + (" BUY" if added else "")
+        hv = broker.hold_value(coin, price)
         print(f"{coin:>9}  {price:>12.4f}  {_REGIME_ICON[regime]:>9}  bags {n:>2}  "
-              f"value {broker.coin_value(coin, price):>8.2f}{note}")
-        c = coin.replace("USDT", "")
-        if sold:
-            actions.append(f"💰 {c}: sold {sold} bag(s) @ {price:g}")
-        if added:
-            actions.append(f"🛒 {c}: bought a bag @ {price:g}")
-        if regime is Regime.BEAR and broker.bags(coin):
-            actions.append(f"🔴 {c}: BEAR — defending, no new bags ({n} frozen)")
+              f"hold {hv:>7.2f}  value {broker.coin_value(coin, price):>8.2f}{note}")
 
     broker.save()
 
     # ── portfolio summary (mark-to-market) ───────────────────────────────
     equity = broker.equity(prices)
     start = config.paper_start_balance
-    feast = broker.feast_value(p.tp_pct)
+    feast = broker.feast_value(p.tp_pct, prices)
     n_coins = sum(1 for s in broker.positions if broker.bags(s))
+    n_holds = len(broker.holds)
     print("\n" + "-" * 60)
     print(f"cash              : {broker.cash:>10.2f} USDT")
     print(f"open bags         : {broker.total_bags} across {n_coins} coins")
+    print(f"bull holds        : {n_holds} ({', '.join(broker.holds) or '—'})")
     print(f"realized stream   : {broker.realized:>+10.2f} USDT")
     print(f"equity (MTM)      : {equity:>10.2f} USDT  ({(equity/start-1)*100:+.2f}%)")
     print(f"feast (bags recover): {feast:>8.2f} USDT  ({(feast/start-1)*100:+.2f}%)")
@@ -108,7 +123,7 @@ def main() -> None:
             f"💵 Ручеёк (realized): <b>{broker.realized:+.2f}</b> USDT",
             f"📊 Equity (MTM): <b>{equity:.2f}</b> ({(equity/start-1)*100:+.2f}%)",
             f"🎉 Пир (recover): {feast:.2f} ({(feast/start-1)*100:+.2f}%)",
-            f"🧺 Мешков: {broker.total_bags} на {n_coins} монетах · кэш {broker.cash:.0f}",
+            f"🧺 Мешков: {broker.total_bags} · 🟢 holds: {n_holds} · кэш {broker.cash:.0f}",
             f"🧭 Режим: {reg_line}",
         ]
         if actions:
