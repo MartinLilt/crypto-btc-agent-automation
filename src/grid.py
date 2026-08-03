@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import config
+from .regime import Regime
 from .strategy import sma
 
 
@@ -68,3 +69,23 @@ def should_add_bag(
         return True                        # first bag while in uptrend
     lowest = min(b["entry"] for b in bags)
     return price <= lowest * (1 - params.step_pct / 100)  # dip deeper than last
+
+
+def plan_actions(regime, bags, price, cash, uptrend, params, adaptive=True):
+    """Regime-adaptive plan: which bags to sell + whether to buy.
+
+      BEAR         : bank any TP, take NO new bags (defensive — don't feed a
+                     downtrend; backtests show this lowers drawdown).
+      NEUTRAL/BULL : full grid — bank TP + buy dips (the stream).
+
+    Note (validated 2024/2025): holding through BULL did NOT help — the grid
+    deploys too little capital to ride a strong trend, so "hold" only cut the
+    profitable churn. Capturing a real bull needs a separate buy-&-hold
+    allocation, not a grid tweak. adaptive=False = plain grid everywhere.
+    """
+    sells = bags_hitting_tp(bags, price, params.tp_pct)   # always bank the stream
+    if adaptive and regime is Regime.BEAR:
+        buy = False                                       # defensive: no new bags
+    else:
+        buy = should_add_bag(bags, price, cash, uptrend, params)
+    return sells, buy
