@@ -128,3 +128,40 @@ def get_24h_stats(symbol: str | None = None) -> dict:
         "low_24h": float(data["lowPrice"]),
         "volume_24h": float(data["volume"]),
     }
+
+
+# Quote/base assets that aren't tradeable trend instruments — skip them.
+_SKIP_BASES = {
+    "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "PYUSD", "AEUR",
+    "USD1", "RLUSD", "EUR", "GBP", "AUD", "TRY", "BRL", "ARS", "JPY", "RUB",
+    "XAUT", "PAXG",  # tokenized gold — not crypto
+}
+_LEVERAGED = ("UP", "DOWN", "BULL", "BEAR")
+
+
+def get_top_symbols(
+    n: int = 30,
+    min_quote_volume: float = 0.0,
+    quote: str = "USDT",
+) -> list[str]:
+    """Top `n` spot symbols by 24h quote volume (liquidity-ranked, most first).
+
+    Skips leveraged tokens (…UP/DOWN/BULL/BEAR) and stable/fiat pairs so the
+    universe is real, liquid trend instruments. One request returns every
+    ticker; no keys needed.
+    """
+    data = _get("/api/v3/ticker/24hr")
+    rows: list[tuple[str, float]] = []
+    for d in data:
+        sym = d["symbol"]
+        if not sym.endswith(quote):
+            continue
+        base = sym[: -len(quote)]
+        if base in _SKIP_BASES or any(tok in base for tok in _LEVERAGED):
+            continue
+        qv = float(d.get("quoteVolume", 0.0))
+        if qv < min_quote_volume:
+            continue
+        rows.append((sym, qv))
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return [s for s, _ in rows[:n]]

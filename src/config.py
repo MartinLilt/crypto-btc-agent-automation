@@ -18,6 +18,10 @@ load_dotenv(_PROJECT_ROOT / ".env")
 
 PROJECT_ROOT = _PROJECT_ROOT
 
+# Where runtime state lives. Local: <project>/state. On Railway: set STATE_DIR to
+# a mounted volume path (e.g. /data) so grid state survives redeploys & cron runs.
+STATE_DIR = Path(os.getenv("STATE_DIR", str(_PROJECT_ROOT / "state")))
+
 
 def _bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
@@ -32,7 +36,10 @@ class Config:
     symbol: str
     interval: str
     candle_limit: int
-    target_coins: tuple[str, ...]  # universe screened to pick the target coin
+    target_coins: tuple[str, ...]  # static fallback universe
+    auto_universe: bool            # build the universe live from top-volume coins
+    universe_size: int             # how many coins in the dynamic universe
+    min_quote_volume: float        # min 24h quote volume (liquidity filter), USDT
     auto_target: bool              # let the screener override SYMBOL
     target_screen_interval: str    # timeframe used to JUDGE coins (e.g. 1d)
     target_screen_limit: int       # candles per coin during screening
@@ -60,6 +67,11 @@ class Config:
     stop_loss_pct: float       # exit at -X% (0 = off)
     trailing_stop_pct: float   # exit X% below the peak since entry (0 = off)
     max_hold_bars: int         # force exit after N bars (0 = off)
+    grid_tp_pct: float         # micro take-profit per bag (the stream)
+    grid_step_pct: float       # add a bag when price drops this % below lowest bag
+    grid_unit_usdt: float      # USDT per bag
+    grid_max_bags: int         # max concurrent bags per coin
+    grid_sma: int              # uptrend filter window (no new bags below it)
 
 
 config = Config(
@@ -79,6 +91,9 @@ config = Config(
         ).split(",")
         if c.strip()
     ),
+    auto_universe=_bool("AUTO_UNIVERSE", False),
+    universe_size=int(os.getenv("UNIVERSE_SIZE", "30")),
+    min_quote_volume=float(os.getenv("MIN_QUOTE_VOLUME", "10000000")),
     auto_target=_bool("AUTO_TARGET", False),
     target_screen_interval=os.getenv("TARGET_SCREEN_INTERVAL", "1d").strip(),
     target_screen_limit=int(os.getenv("TARGET_SCREEN_LIMIT", "365")),
@@ -106,4 +121,9 @@ config = Config(
     stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0")),
     trailing_stop_pct=float(os.getenv("TRAILING_STOP_PCT", "0")),
     max_hold_bars=int(os.getenv("MAX_HOLD_BARS", "0")),
+    grid_tp_pct=float(os.getenv("GRID_TP_PCT", "0.8")),
+    grid_step_pct=float(os.getenv("GRID_STEP_PCT", "1.5")),
+    grid_unit_usdt=float(os.getenv("GRID_UNIT_USDT", "40")),
+    grid_max_bags=int(os.getenv("GRID_MAX_BAGS", "8")),
+    grid_sma=int(os.getenv("GRID_SMA", "100")),
 )

@@ -15,6 +15,7 @@ import sys
 
 from src.config import config
 from src.screener import screen
+from src.universe import get_universe
 
 
 def main(argv: list[str]) -> None:
@@ -24,7 +25,7 @@ def main(argv: list[str]) -> None:
 
     print(f"Target-coin screen | strategy={strategy_name.upper()} | {interval} "
           f"| {limit} candles/coin | net of fees+tax\n")
-    print(f"universe: {', '.join(config.target_coins)}\n")
+    print(f"universe: {', '.join(get_universe())}\n")
 
     ranked = screen(interval=interval, limit=limit, strategy_name=strategy_name)
 

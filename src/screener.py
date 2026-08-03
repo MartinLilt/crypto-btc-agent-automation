@@ -77,9 +77,10 @@ def screen(
     """Score every candidate coin, best first."""
     # Imported here to avoid a circular import (engine -> policy -> strategy).
     from src.binance_api import get_candles
+    from src.universe import get_universe
     from backtest.engine import run_backtest
 
-    coins = coins or config.target_coins
+    coins = coins or get_universe()
     interval = interval or config.target_screen_interval
     limit = limit or config.target_screen_limit
     strategy_name = strategy_name or config.strategy

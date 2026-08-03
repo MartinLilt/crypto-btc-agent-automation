@@ -61,6 +61,21 @@ def get_funding_history(symbol: str, limit: int = 1000) -> list[FundingPoint]:
     ]
 
 
+def get_perpetual_symbols() -> set[str]:
+    """All actively-trading USD-M PERPETUAL symbols (e.g. {'BTCUSDT', ...}).
+
+    Used to filter the universe down to real, liquid crypto that also has a
+    futures market — excludes tokenized stocks, gold and stablecoin pairs, and
+    guarantees funding-carry compatibility.
+    """
+    data = _get("/fapi/v1/exchangeInfo")
+    return {
+        s["symbol"]
+        for s in data.get("symbols", [])
+        if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
+    }
+
+
 def get_current_funding(symbol: str) -> float:
     """Latest funding rate for a symbol (per 8h fraction)."""
     data = _get("/fapi/v1/premiumIndex", {"symbol": symbol})

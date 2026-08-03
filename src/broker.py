@@ -23,10 +23,10 @@ from urllib.parse import urlencode
 
 import requests
 
-from .config import PROJECT_ROOT, config
+from .config import STATE_DIR, config
 from .strategy import Signal
 
-_STATE_DIR = PROJECT_ROOT / "state"
+_STATE_DIR = STATE_DIR
 _PAPER_STATE_FILE = _STATE_DIR / "paper_state.json"
 _TIMEOUT = 10
 

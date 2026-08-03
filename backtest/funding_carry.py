@@ -19,18 +19,20 @@ from __future__ import annotations
 
 from src.config import config
 from src.funding import annualized, get_current_funding, get_funding_history
+from src.universe import get_universe
 
 _LEGS_ROUND_TRIP = 4  # open spot+perp, close spot+perp
 
 
 def main() -> None:
     fee = config.fee_rate
+    universe = get_universe()
     print(f"Funding-carry screen | delta-neutral | fee {fee*100:.2f}%/leg "
           f"× {_LEGS_ROUND_TRIP} round-trip\n")
-    print(f"universe: {', '.join(config.target_coins)}\n")
+    print(f"universe ({len(universe)}): {', '.join(universe)}\n")
 
     rows = []
-    for coin in config.target_coins:
+    for coin in universe:
         try:
             h = get_funding_history(coin, 1000)
             if len(h) < 30:

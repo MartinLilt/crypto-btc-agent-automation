@@ -18,6 +18,7 @@ from __future__ import annotations
 from src.binance_api import get_candles
 from src.config import config
 from src.strategy import get_strategy
+from src.universe import get_universe
 
 # (trading interval, candles, regime timeframe) — multi-horizon view.
 # 1h needs 61*24≈1464 bars just to warm up a daily regime, so fetch ~150 days.
@@ -32,13 +33,14 @@ STRATEGIES = ["sma", "ema", "rsi"]
 def main() -> None:
     from backtest.engine import run_backtest
 
+    universe = get_universe()
     print("Opportunity scan | gated, multi-TF | net of Binance fees + LT tax "
           "| 1000 all-in\n")
-    print(f"universe: {', '.join(config.target_coins)}\n")
+    print(f"universe ({len(universe)}): {', '.join(universe)}\n")
 
     rows = []
     for interval, limit, reg_tf in HORIZONS:
-        for coin in config.target_coins:
+        for coin in universe:
             try:
                 candles = get_candles(symbol=coin, interval=interval, limit=limit)
                 if len(candles) < 120:

@@ -1,98 +1,79 @@
-"""Autonomous runner — one decision cycle for short-term spot.
+"""Grid-stream runner — one cycle over the blue-chip basket.
 
-    autopilot (coin -> tendency -> strategy) -> policy gate -> broker -> report
+For each admitted coin (TARGET_COINS): drip the stream (sell bags that hit their
+micro take-profit) and, only while the coin is in an uptrend, add a bag on a
+deeper dip. Bags that go underwater are frozen and held for the bull-cycle feast.
 
-The system chooses coin, tendency and strategy on its own. The ONLY thing you
-switch by hand is TRADING_MODE (paper | live). Autonomy switches in .env:
-    AUTO_TARGET    true = find the coin           (else trade SYMBOL)
-    AUTO_STRATEGY  true = pick the strategy        (else use STRATEGY)
-    REGIME_GATE    true = read tendency & adapt
-Run:
+You switch only TRADING_MODE (paper|live). Run:
     source .venv/bin/activate
     python main.py
 """
 
 from __future__ import annotations
 
-import time
-
-from src.autopilot import plan
-from src.binance_api import get_candles, get_price
-from src.broker import execute, get_broker
+from src.binance_api import get_candles
 from src.config import config
-from src.exits import check_exit, rules_from_config
-from src.policy import decide
-from src.regime import _INTERVAL_SECONDS
-from src.strategy import Signal, evaluate
+from src.grid import bags_hitting_tp, is_uptrend, params_from_config, should_add_bag
+from src.grid_broker import get_grid_broker
+from src.universe import get_universe
 
 
 def main() -> None:
-    print("Autopilot: choosing coin → tendency → strategy ...")
-    p = plan()
-
-    if p.symbol is None:
-        print(f"→ {p.reason}. Nothing to do.")
-        return
-
-    symbol, strategy = p.symbol, p.strategy
-    if p.strategy_pick is not None:
-        sp = p.strategy_pick
-        print(f"🎯 coin: {symbol}   📈 tendency: {p.regime.value if p.regime else '—'}   "
-              f"🧠 strategy: {strategy.upper()} "
-              f"(backtest {sp.net_return_pct:+.2f}% net, {sp.win_rate:.0f}% win)\n")
+    p = params_from_config()
+    universe = get_universe()
+    print(f"=== Grid-stream | mode={config.trading_mode.upper()} | {config.interval} "
+          f"| TP {p.tp_pct}% · step {p.step_pct}% · unit {p.unit_usdt} · "
+          f"max {p.max_bags} bags · SMA{p.sma_win} ===")
+    if config.trading_mode == "live":
+        print("!! live grid execution not wired yet — running the paper broker.\n")
     else:
-        print(f"🎯 coin: {symbol}   📈 tendency: {p.regime.value if p.regime else '—'}   "
-              f"🧠 strategy: {strategy.upper()} (fixed)\n")
+        print()
 
-    print(f"=== {symbol} | mode={config.trading_mode.upper()} "
-          f"| strategy={strategy.upper()} | regime_gate={config.regime_gate} "
-          f"| trade={config.interval} regime={config.regime_interval} ===\n")
+    broker = get_grid_broker()
+    prices: dict[str, float] = {}
+    limit = p.sma_win + 60
 
-    candles = get_candles(symbol=symbol)
-    price = get_price(symbol)
+    for coin in universe:
+        try:
+            candles = get_candles(symbol=coin, interval=config.interval, limit=limit)
+        except Exception as exc:
+            print(f"{coin:>9}  (skipped: {str(exc)[:40]})")
+            continue
+        closes = [c.close for c in candles]
+        price = closes[-1]
+        prices[coin] = price
+        up = is_uptrend(closes, p.sma_win)
 
-    # Strategy's own view (for display), then the regime-gated decision.
-    result = evaluate(candles, name=strategy)
-    decision = decide(candles, strategy_name=strategy, regime_override=p.regime)
+        # 1. stream: sell every bag that reached its take-profit (high index first)
+        sold = 0
+        for i in sorted(bags_hitting_tp(broker.bags(coin), price, p.tp_pct), reverse=True):
+            broker.sell_bag(coin, i, price)
+            sold += 1
 
-    print(f"price now   : {price:.4f} USDT")
-    if decision.regime is not None:
-        print(f"regime      : {decision.regime.value}  (on {config.regime_interval})")
-    for name, value in result.indicators.items():
-        if value is not None:
-            print(f"{name:<12}: {value:.4f}")
-    print(f"raw signal  : {decision.raw_signal.value}  ({result.reason})")
-    print(f"decision    : {decision.signal.value}  ({decision.reason})")
+        # 2. accumulate: add a bag only in an uptrend, on a deeper dip
+        added = False
+        if should_add_bag(broker.bags(coin), price, broker.cash, up, p):
+            broker.buy(coin, price, p.unit_usdt)
+            added = True
 
-    base_asset = symbol.replace("USDT", "").replace("EUR", "")
-    broker = get_broker()
-    pos = broker.position
-    print(f"\nposition    : {pos.base:.6f} {base_asset} + {pos.quote:.2f} USDT "
-          f"(equity {pos.equity(price):.2f} USDT)")
+        trend = "↑up" if up else ("↓down" if up is not None else "—")
+        n = len(broker.bags(coin))
+        note = (" SOLD %d" % sold if sold else "") + (" BUY" if added else "")
+        print(f"{coin:>9}  {price:>12.4f}  {trend:>5}  bags {n:>2}  "
+              f"value {broker.coin_value(coin, price):>8.2f}{note}")
 
-    # Exit management gets first say — keeps "longs" short (TP/SL/trailing/timeout).
-    final_signal = decision.signal
-    if pos.is_long:
-        broker.update_peak(price)
-        pos = broker.position
-        rules = rules_from_config()
-        bar_s = _INTERVAL_SECONDS.get(config.interval, 3600)
-        bars_held = int((time.time() - pos.entry_epoch) / bar_s) if pos.entry_epoch else 0
-        if rules.any_active:
-            reason = check_exit(rules, pos.entry_price, pos.peak_price, bars_held, price)
-            if reason:
-                final_signal = Signal.SELL
-                print(f"exit rule   : {reason} → SELL (held ~{bars_held} bars)")
+    broker.save()
 
-    trade = execute(broker, final_signal, price)
-    if trade:
-        print(f"EXECUTED    : {trade.side} {trade.base_qty:.6f} {base_asset} "
-              f"@ {trade.price:.4f}  (fee {trade.fee:.4f})")
-        pos = broker.position
-        print(f"new position: {pos.base:.6f} {base_asset} + {pos.quote:.2f} USDT "
-              f"(equity {pos.equity(price):.2f} USDT)")
-    else:
-        print("no action   : position unchanged")
+    # ── portfolio summary (mark-to-market) ───────────────────────────────
+    equity = broker.equity(prices)
+    start = config.paper_start_balance
+    feast = broker.feast_value(p.tp_pct)
+    print("\n" + "-" * 60)
+    print(f"cash              : {broker.cash:>10.2f} USDT")
+    print(f"open bags         : {broker.total_bags} across {sum(1 for s in broker.positions if broker.bags(s))} coins")
+    print(f"realized stream   : {broker.realized:>+10.2f} USDT")
+    print(f"equity (MTM)      : {equity:>10.2f} USDT  ({(equity/start-1)*100:+.2f}%)")
+    print(f"feast (bags recover): {feast:>8.2f} USDT  ({(feast/start-1)*100:+.2f}%)")
 
 
 if __name__ == "__main__":

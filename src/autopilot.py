@@ -134,9 +134,11 @@ def plan(symbol: str | None = None) -> Plan:
                     f"trade {strategy.upper()} on {symbol}")
 
     # Autonomous path: scan the universe, pick the coin+strategy we earn most on.
+    from src.universe import get_universe
+
     best_symbol: str | None = None
     best_pick: StrategyPick | None = None
-    for coin in config.target_coins:
+    for coin in get_universe():
         try:
             pick = select_strategy(coin)
         except Exception:

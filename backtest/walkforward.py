@@ -86,8 +86,9 @@ def main(argv: list[str]) -> None:
           f"| net of fees+tax\n")
     print(f"Fetching {total} candles/coin for {len(config.target_coins)} coins...")
 
+    from src.universe import get_universe
     coin_candles = {}
-    for coin in config.target_coins:
+    for coin in get_universe():
         try:
             c = get_candles(symbol=coin, interval=interval, limit=total)
             if len(c) >= warmup + per_seg * 2:
