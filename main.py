@@ -115,19 +115,48 @@ def main() -> None:
     )
     print(f"regime            : {reg_line}")
 
+    # ── per-coin position detail (what each position is waiting for) ──────
+    pos_lines: list[str] = []
+    for coin in universe:
+        price = prices.get(coin)
+        if price is None:
+            continue
+        cn = coin.replace("USDT", "")
+        hold = broker.holds.get(coin)
+        bags = broker.bags(coin)
+        if hold:
+            pnlp = (hold["qty"] * price - hold["cost"]) / hold["cost"] * 100
+            pos_lines.append(
+                f"🟢 <b>{cn}</b> hold ${hold['cost']:.0f} · вход {hold['entry']:g} · "
+                f"сейчас {price:g} ({pnlp:+.1f}%) · едет ↑, ждёт конца BULL")
+        if bags:
+            qty = sum(b["qty"] for b in bags)
+            invested = sum(b["cost"] for b in bags)
+            avg = sum(b["entry"] * b["qty"] for b in bags) / qty
+            pnlp = (qty * price - invested) / invested * 100
+            tp_lo = min(b["entry"] for b in bags) * (1 + p.tp_pct / 100)
+            icon = "🔴" if regimes[coin] is Regime.BEAR else "⚪"
+            pos_lines.append(
+                f"{icon} <b>{cn}</b> {len(bags)} меш · ${invested:.0f} · "
+                f"ср.вход {avg:g} · сейчас {price:g} ({pnlp:+.1f}%) · продаст от {tp_lo:g}")
+    if not pos_lines:
+        pos_lines = ["— открытых позиций нет —"]
+    print("positions:\n  " + "\n  ".join(pos_lines))
+
     # ── Telegram results output ──────────────────────────────────────────
     if notify.enabled():
         lines = [
             f"<b>🌊 Grid-stream</b> · {config.trading_mode.upper()} · {config.interval}",
+            f"📊 Счёт: <b>{equity:.0f}</b> ({(equity/start-1)*100:+.2f}%) · кэш {broker.cash:.0f}",
+            f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> · 🎉 Пир: {feast:.0f} ({(feast/start-1)*100:+.1f}%)",
+            f"🧺 {broker.total_bags} меш · 🟢 {n_holds} hold",
+            f"🧭 {reg_line}",
             "",
-            f"💵 Ручеёк (realized): <b>{broker.realized:+.2f}</b> USDT",
-            f"📊 Equity (MTM): <b>{equity:.2f}</b> ({(equity/start-1)*100:+.2f}%)",
-            f"🎉 Пир (recover): {feast:.2f} ({(feast/start-1)*100:+.2f}%)",
-            f"🧺 Мешков: {broker.total_bags} · 🟢 holds: {n_holds} · кэш {broker.cash:.0f}",
-            f"🧭 Режим: {reg_line}",
+            "<b>📦 Позиции (чего ждут):</b>",
+            *pos_lines,
         ]
         if actions:
-            lines += ["", "<b>Действия:</b>", *actions]
+            lines += ["", "<b>⚡ Действия за цикл:</b>", *actions]
         notify.send("\n".join(lines))
 
 
