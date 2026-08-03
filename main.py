@@ -15,6 +15,7 @@ from src.binance_api import get_candles
 from src.config import config
 from src.grid import bags_hitting_tp, is_uptrend, params_from_config, should_add_bag
 from src.grid_broker import get_grid_broker
+from src import notify
 from src.universe import get_universe
 
 
@@ -32,6 +33,7 @@ def main() -> None:
     broker = get_grid_broker()
     prices: dict[str, float] = {}
     limit = p.sma_win + 60
+    actions: list[str] = []   # coins where something happened, for the report
 
     for coin in universe:
         try:
@@ -61,6 +63,11 @@ def main() -> None:
         note = (" SOLD %d" % sold if sold else "") + (" BUY" if added else "")
         print(f"{coin:>9}  {price:>12.4f}  {trend:>5}  bags {n:>2}  "
               f"value {broker.coin_value(coin, price):>8.2f}{note}")
+        c = coin.replace("USDT", "")
+        if sold:
+            actions.append(f"💰 {c}: sold {sold} bag(s) @ {price:g}")
+        if added:
+            actions.append(f"🛒 {c}: bought a bag @ {price:g}")
 
     broker.save()
 
@@ -68,12 +75,32 @@ def main() -> None:
     equity = broker.equity(prices)
     start = config.paper_start_balance
     feast = broker.feast_value(p.tp_pct)
+    n_coins = sum(1 for s in broker.positions if broker.bags(s))
     print("\n" + "-" * 60)
     print(f"cash              : {broker.cash:>10.2f} USDT")
-    print(f"open bags         : {broker.total_bags} across {sum(1 for s in broker.positions if broker.bags(s))} coins")
+    print(f"open bags         : {broker.total_bags} across {n_coins} coins")
     print(f"realized stream   : {broker.realized:>+10.2f} USDT")
     print(f"equity (MTM)      : {equity:>10.2f} USDT  ({(equity/start-1)*100:+.2f}%)")
     print(f"feast (bags recover): {feast:>8.2f} USDT  ({(feast/start-1)*100:+.2f}%)")
+
+    # ── Telegram results output ──────────────────────────────────────────
+    if notify.enabled():
+        lines = [
+            f"<b>🌊 Grid-stream</b> · {config.trading_mode.upper()} · {config.interval}",
+            "",
+            f"💵 Ручеёк (realized): <b>{broker.realized:+.2f}</b> USDT",
+            f"📊 Equity (MTM): <b>{equity:.2f}</b> ({(equity/start-1)*100:+.2f}%)",
+            f"🎉 Пир (recover): {feast:.2f} ({(feast/start-1)*100:+.2f}%)",
+            f"🧺 Мешков: {broker.total_bags} на {n_coins} монетах · кэш {broker.cash:.0f}",
+        ]
+        if actions:
+            lines += ["", "<b>Действия:</b>", *actions]
+        notify.send("\n".join(lines))
+
+
+if __name__ == "__main__":
+    main()
+
 
 
 if __name__ == "__main__":
