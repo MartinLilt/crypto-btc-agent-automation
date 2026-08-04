@@ -29,7 +29,7 @@ def main() -> None:
           f"| TP {p.tp_pct}% · step {p.step_pct}% · unit {p.unit_usdt} · "
           f"max {p.max_bags} bags · SMA{p.sma_win} ===")
     if config.trading_mode == "live":
-        print("!! live grid execution not wired yet — running the paper broker.\n")
+        print("⚠️  LIVE — placing REAL Binance orders with real funds.\n")
     else:
         print()
 
@@ -60,35 +60,39 @@ def main() -> None:
         c = coin.replace("USDT", "")
         note = ""
 
-        if config.regime_adaptive and regime is Regime.BULL:
-            # BULL: ride a buy-&-hold allocation instead of gridding.
-            if not broker.has_hold(coin):
-                amt = min(config.bull_hold_pct * config.paper_start_balance, broker.cash)
-                if amt >= p.unit_usdt:
-                    broker.buy_hold(coin, price, amt)
-                    note = " HOLD-BUY"
-                    actions.append(f"🟢 {c}: BULL — bought hold ${amt:.0f} to ride")
+        try:
+            if config.regime_adaptive and regime is Regime.BULL:
+                # BULL: ride a buy-&-hold allocation instead of gridding.
+                if not broker.has_hold(coin):
+                    amt = min(config.bull_hold_pct * config.paper_start_balance, broker.cash)
+                    if amt >= p.unit_usdt:
+                        broker.buy_hold(coin, price, amt)
+                        note = " HOLD-BUY"
+                        actions.append(f"🟢 {c}: BULL — bought hold ${amt:.0f} to ride")
+                else:
+                    note = " HOLDING"
             else:
-                note = " HOLDING"
-        else:
-            # left BULL → liquidate the ride (take the bull gains)
-            if broker.has_hold(coin):
-                pnl = broker.sell_hold(coin, price)
-                note = f" HOLD-SELL {pnl:+.0f}"
-                actions.append(f"🏁 {c}: exited BULL hold, pnl {pnl:+.0f}")
-            # NEUTRAL / BEAR → adaptive grid
-            sells, do_buy = plan_actions(regime, broker.bags(coin), price, broker.cash,
-                                         up, p, config.regime_adaptive)
-            sold = 0
-            for i in sorted(sells, reverse=True):
-                broker.sell_bag(coin, i, price); sold += 1
-            if do_buy:
-                broker.buy(coin, price, p.unit_usdt); note += " BUY"
-            if sold:
-                note = f" SOLD {sold}" + note
-                actions.append(f"💰 {c}: sold {sold} bag(s) @ {price:g}")
-            if "BUY" in note and "HOLD" not in note:
-                actions.append(f"🛒 {c}: bought a bag @ {price:g}")
+                # left BULL → liquidate the ride (take the bull gains)
+                if broker.has_hold(coin):
+                    pnl = broker.sell_hold(coin, price)
+                    note = f" HOLD-SELL {pnl:+.0f}"
+                    actions.append(f"🏁 {c}: exited BULL hold, pnl {pnl:+.0f}")
+                # NEUTRAL / BEAR → adaptive grid
+                sells, do_buy = plan_actions(regime, broker.bags(coin), price, broker.cash,
+                                             up, p, config.regime_adaptive)
+                sold = 0
+                for i in sorted(sells, reverse=True):
+                    broker.sell_bag(coin, i, price); sold += 1
+                if do_buy:
+                    broker.buy(coin, price, p.unit_usdt); note += " BUY"
+                if sold:
+                    note = f" SOLD {sold}" + note
+                    actions.append(f"💰 {c}: sold {sold} bag(s) @ {price:g}")
+                if "BUY" in note and "HOLD" not in note:
+                    actions.append(f"🛒 {c}: bought a bag @ {price:g}")
+        except Exception as exc:
+            note = " ⚠ORDER-FAILED"
+            actions.append(f"⚠️ {c}: order failed — {str(exc)[:70]}")
 
         n = len(broker.bags(coin))
         hv = broker.hold_value(coin, price)
@@ -96,6 +100,11 @@ def main() -> None:
               f"hold {hv:>7.2f}  value {broker.coin_value(coin, price):>8.2f}{note}")
 
     broker.save()
+
+    # live safety: warn if the exchange balances drift from our ledger
+    if hasattr(broker, "reconcile"):
+        for w in broker.reconcile(prices):
+            actions.append(f"🔎 reconcile: {w}")
 
     # ── portfolio summary (mark-to-market) ───────────────────────────────
     equity = broker.equity(prices)

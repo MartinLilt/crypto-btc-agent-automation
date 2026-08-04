@@ -118,5 +118,90 @@ class GridBroker:
         return sum(len(b) for b in self.positions.values())
 
 
+class LiveGridBroker(GridBroker):
+    """Same logical ledger as GridBroker, but orders hit REAL Binance spot.
+
+    The store (Postgres/JSON) holds the logical bags/holds — the exchange only
+    knows total coin balances. Cash = real free USDT (source of truth). Bag qty
+    & cost come from actual fills. Market orders only. Errors are raised so the
+    runner can log & skip; a failed order never leaves a phantom bag.
+    """
+
+    mode = "live"
+
+    def __init__(self) -> None:
+        if config.trading_mode != "live":
+            raise BrokerError("LiveGridBroker requires TRADING_MODE=live")
+        super().__init__()                 # logical bags/holds/realized from store
+        from . import binance_trade as bt
+        self._bt = bt
+        self.cash = bt.free_usdt()         # real USDT balance is the truth
+
+    @property
+    def backend(self) -> str:
+        return f"{self.store.backend}+LIVE"
+
+    def buy(self, symbol: str, price: float, unit_usdt: float) -> dict:
+        resp = self._bt.market_buy(symbol, unit_usdt)
+        qty, quote, avg = self._bt.fill_amounts(resp, price)
+        bag = {"entry": avg, "qty": qty, "cost": quote, "time": time.time()}
+        self.bags(symbol).append(bag)
+        self.cash -= quote
+        self.store.log_trade(symbol=symbol, side="BUY", kind="bag",
+                             price=avg, qty=qty, usdt=quote, pnl=0.0)
+        return bag
+
+    def sell_bag(self, symbol: str, index: int, price: float) -> float:
+        bag = self.bags(symbol)[index]
+        resp = self._bt.market_sell(symbol, bag["qty"])
+        qty, quote, avg = self._bt.fill_amounts(resp, price)
+        self.bags(symbol).pop(index)
+        self.cash += quote
+        pnl = quote - bag["cost"]
+        self.realized += pnl
+        self.store.log_trade(symbol=symbol, side="SELL", kind="bag",
+                             price=avg, qty=qty, usdt=quote, pnl=pnl)
+        return pnl
+
+    def buy_hold(self, symbol: str, price: float, amount_usdt: float) -> None:
+        resp = self._bt.market_buy(symbol, amount_usdt)
+        qty, quote, avg = self._bt.fill_amounts(resp, price)
+        self.holds[symbol] = {"entry": avg, "qty": qty, "cost": quote, "time": time.time()}
+        self.cash -= quote
+        self.store.log_trade(symbol=symbol, side="BUY", kind="hold",
+                             price=avg, qty=qty, usdt=quote, pnl=0.0)
+
+    def sell_hold(self, symbol: str, price: float) -> float:
+        h = self.holds[symbol]
+        resp = self._bt.market_sell(symbol, h["qty"])
+        qty, quote, avg = self._bt.fill_amounts(resp, price)
+        self.holds.pop(symbol)
+        self.cash += quote
+        pnl = quote - h["cost"]
+        self.realized += pnl
+        self.store.log_trade(symbol=symbol, side="SELL", kind="hold",
+                             price=avg, qty=qty, usdt=quote, pnl=pnl)
+        return pnl
+
+    def reconcile(self, prices: dict[str, float]) -> list[str]:
+        """Safety: warn if exchange coin balances drift from our logical ledger."""
+        warnings = []
+        try:
+            free = self._bt.get_free_balances()
+        except Exception as exc:
+            return [f"balance read failed: {str(exc)[:60]}"]
+        for sym in set(self.positions) | set(self.holds):
+            base = sym.replace("USDT", "")
+            logical = sum(b["qty"] for b in self.bags(sym)) + \
+                (self.holds[sym]["qty"] if sym in self.holds else 0.0)
+            actual = free.get(base, 0.0)
+            if logical > 0 and abs(actual - logical) / logical > 0.05:
+                warnings.append(f"{base}: ledger {logical:.6f} vs exchange {actual:.6f}")
+        return warnings
+
+
 def get_grid_broker() -> GridBroker:
+    """Live broker only when explicitly in live mode WITH keys; else paper."""
+    if config.trading_mode == "live" and config.api_key and config.api_secret:
+        return LiveGridBroker()
     return GridBroker()
