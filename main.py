@@ -103,6 +103,9 @@ def main() -> None:
     feast = broker.feast_value(p.tp_pct, prices)
     n_coins = sum(1 for s in broker.positions if broker.bags(s))
     n_holds = len(broker.holds)
+    # Estimated tax LIABILITY on realised gains only (annual, above allowance) —
+    # NOT deducted from equity: you pay it yearly from fiat, and open bags aren't taxed.
+    est_tax = max(0.0, broker.realized - config.tax_allowance) * config.tax_rate
     print("\n" + "-" * 60)
     print(f"cash              : {broker.cash:>10.2f} USDT")
     print(f"open bags         : {broker.total_bags} across {n_coins} coins")
@@ -110,6 +113,7 @@ def main() -> None:
     print(f"realized stream   : {broker.realized:>+10.2f} USDT")
     print(f"equity (MTM)      : {equity:>10.2f} USDT  ({(equity/start-1)*100:+.2f}%)")
     print(f"feast (bags recover): {feast:>8.2f} USDT  ({(feast/start-1)*100:+.2f}%)")
+    print(f"est. tax liability: {est_tax:>10.2f} USDT  (on realised only, paid yearly)")
 
     reg_line = " · ".join(
         f"{c.replace('USDT','')}:{regimes[c].value[0]}" for c in regimes
@@ -150,6 +154,7 @@ def main() -> None:
             f"<b>🌊 Grid-stream</b> · {config.trading_mode.upper()} · {config.interval}",
             f"📊 Счёт: <b>{equity:.0f}</b> ({(equity/start-1)*100:+.2f}%) · кэш {broker.cash:.0f}",
             f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> · 🎉 Пир: {feast:.0f} ({(feast/start-1)*100:+.1f}%)",
+            f"🏛 налог (оценка, с realized): {est_tax:.2f} · платится раз в год",
             f"🧺 {broker.total_bags} меш · 🟢 {n_holds} hold · 🗄 {broker.backend}",
             f"🧭 {reg_line}",
             "",

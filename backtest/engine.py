@@ -64,16 +64,21 @@ class BacktestResult:
     def buy_hold_pct(self) -> float:
         return (self.buy_hold_equity / self.start_balance - 1) * 100
 
-    def tax(self, rate: float | None = None, allowance: float | None = None) -> float:
-        """Lithuania GPM-style tax on realised gains (net of Binance fees).
+    @property
+    def realized_pnl(self) -> float:
+        """Profit from CLOSED trades only (open bags/holds are NOT realised)."""
+        return sum(t.pnl for t in self.trades if t.side == "SELL")
 
-        Tax is charged only on positive P&L above the annual allowance; losses
-        are never taxed. rate/allowance default to .env (TAX_RATE, TAX_ALLOWANCE).
+    def tax(self, rate: float | None = None, allowance: float | None = None) -> float:
+        """Lithuania GPM-style tax on REALISED gains only (net of Binance fees).
+
+        Correct model: tax hits realised profit (closed trades) above the annual
+        allowance — NOT unrealised open positions, and not per-trade. Losses are
+        never taxed. rate/allowance default to .env (TAX_RATE, TAX_ALLOWANCE).
         """
         rate = config.tax_rate if rate is None else rate
         allowance = config.tax_allowance if allowance is None else allowance
-        pl = self.end_equity - self.start_balance
-        taxable = max(0.0, pl - allowance)
+        taxable = max(0.0, self.realized_pnl - allowance)
         return taxable * rate
 
     def net_equity(self, rate: float | None = None, allowance: float | None = None) -> float:
