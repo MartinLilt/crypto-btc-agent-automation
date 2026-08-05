@@ -20,6 +20,10 @@ from .config import config
 from .store import get_store
 
 
+class BrokerError(RuntimeError):
+    """Raised when a live order can't be placed or is left unfilled."""
+
+
 class GridBroker:
     mode = "paper"
 
@@ -151,6 +155,8 @@ class LiveGridBroker(GridBroker):
     def buy(self, symbol: str, price: float, unit_usdt: float) -> dict:
         resp = self._bt.market_buy(symbol, unit_usdt)
         qty, quote, avg = self._bt.fill_amounts(resp, price)
+        if qty <= 0 or quote <= 0:      # unfilled order → never record a phantom bag
+            raise BrokerError(f"{symbol}: buy returned no fill (qty={qty}, quote={quote})")
         bag = {"entry": avg, "qty": qty, "cost": quote, "time": time.time()}
         self.bags(symbol).append(bag)
         self.cash -= quote
@@ -173,6 +179,8 @@ class LiveGridBroker(GridBroker):
     def buy_hold(self, symbol: str, price: float, amount_usdt: float) -> None:
         resp = self._bt.market_buy(symbol, amount_usdt)
         qty, quote, avg = self._bt.fill_amounts(resp, price)
+        if qty <= 0 or quote <= 0:      # unfilled order → never record a phantom hold
+            raise BrokerError(f"{symbol}: hold-buy returned no fill (qty={qty}, quote={quote})")
         self.holds[symbol] = {"entry": avg, "qty": qty, "cost": quote, "time": time.time()}
         self.cash -= quote
         self.store.log_trade(symbol=symbol, side="BUY", kind="hold",
