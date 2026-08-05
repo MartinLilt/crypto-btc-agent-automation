@@ -30,9 +30,13 @@ def get_universe(refresh: bool = False) -> tuple[str, ...]:
             # Pull a wide top-volume list, then keep only coins that also have a
             # perpetual future — filters out tokenized stocks / gold / stables
             # and guarantees real, liquid, carry-compatible crypto.
-            wide = get_top_symbols(config.universe_size * 4, config.min_quote_volume)
+            wide = get_top_symbols(config.universe_size * 4, config.min_quote_volume,
+                                   quote=config.quote_asset)
             perps = get_perpetual_symbols()
-            filtered = [s for s in wide if s in perps][: config.universe_size]
+            # perps are USDT-quoted; match by base asset so USDC pairs pass too
+            perp_bases = {s.replace("USDT", "") for s in perps}
+            filtered = [s for s in wide
+                        if s.replace(config.quote_asset, "") in perp_bases][: config.universe_size]
             if filtered:
                 coins = tuple(filtered)
         except Exception:

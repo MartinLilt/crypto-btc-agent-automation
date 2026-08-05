@@ -51,8 +51,9 @@ def get_free_balances() -> dict[str, float]:
     return {b["asset"]: float(b["free"]) for b in data["balances"]}
 
 
-def free_usdt() -> float:
-    return get_free_balances().get("USDT", 0.0)
+def free_quote() -> float:
+    """Free balance of the quote currency (USDC in the EU)."""
+    return get_free_balances().get(config.quote_asset, 0.0)
 
 
 def _lot_step(symbol: str) -> str:

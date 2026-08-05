@@ -34,6 +34,7 @@ class Config:
     trading_mode: str          # "paper" | "live"
     testnet: bool
     symbol: str
+    quote_asset: str           # quote currency (USDC in the EU; USDT elsewhere)
     interval: str
     candle_limit: int
     target_coins: tuple[str, ...]  # static fallback universe
@@ -84,7 +85,8 @@ config = Config(
     api_secret=os.getenv("BINANCE_API_SECRET", "").strip(),
     trading_mode=os.getenv("TRADING_MODE", "paper").strip().lower(),
     testnet=_bool("BINANCE_TESTNET", False),
-    symbol=os.getenv("SYMBOL", "LTCUSDT").strip().upper(),
+    symbol=os.getenv("SYMBOL", "LTCUSDC").strip().upper(),
+    quote_asset=os.getenv("QUOTE_ASSET", "USDC").strip().upper(),
     interval=os.getenv("INTERVAL", "1h").strip(),
     candle_limit=int(os.getenv("CANDLE_LIMIT", "200")),
     target_coins=tuple(

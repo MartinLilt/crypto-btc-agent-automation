@@ -57,14 +57,14 @@ def main() -> None:
         # market regime for this coin, measured on the higher timeframe
         regime = detect_regime(resample(candles, factor)).regime
         regimes[coin] = regime
-        c = coin.replace("USDT", "")
+        c = coin.replace(config.quote_asset, "")
         note = ""
 
         try:
             if config.regime_adaptive and regime is Regime.BULL:
                 # BULL: ride a buy-&-hold allocation instead of gridding.
                 if not broker.has_hold(coin):
-                    amt = min(config.bull_hold_pct * config.paper_start_balance, broker.cash)
+                    amt = min(config.bull_hold_pct * broker.capital_base, broker.cash)
                     if amt >= p.unit_usdt:
                         broker.buy_hold(coin, price, amt)
                         note = " HOLD-BUY"
@@ -108,7 +108,7 @@ def main() -> None:
 
     # ── portfolio summary (mark-to-market) ───────────────────────────────
     equity = broker.equity(prices)
-    start = config.paper_start_balance
+    start = broker.capital_base
     feast = broker.feast_value(p.tp_pct, prices)
     n_coins = sum(1 for s in broker.positions if broker.bags(s))
     n_holds = len(broker.holds)
@@ -116,16 +116,16 @@ def main() -> None:
     # NOT deducted from equity: you pay it yearly from fiat, and open bags aren't taxed.
     est_tax = max(0.0, broker.realized - config.tax_allowance) * config.tax_rate
     print("\n" + "-" * 60)
-    print(f"cash              : {broker.cash:>10.2f} USDT")
+    print(f"cash              : {broker.cash:>10.2f} {config.quote_asset}")
     print(f"open bags         : {broker.total_bags} across {n_coins} coins")
     print(f"bull holds        : {n_holds} ({', '.join(broker.holds) or '—'})")
-    print(f"realized stream   : {broker.realized:>+10.2f} USDT")
-    print(f"equity (MTM)      : {equity:>10.2f} USDT  ({(equity/start-1)*100:+.2f}%)")
-    print(f"feast (bags recover): {feast:>8.2f} USDT  ({(feast/start-1)*100:+.2f}%)")
-    print(f"est. tax liability: {est_tax:>10.2f} USDT  (on realised only, paid yearly)")
+    print(f"realized stream   : {broker.realized:>+10.2f} {config.quote_asset}")
+    print(f"equity (MTM)      : {equity:>10.2f} {config.quote_asset}  ({(equity/start-1)*100:+.2f}%)")
+    print(f"feast (bags recover): {feast:>8.2f} {config.quote_asset}  ({(feast/start-1)*100:+.2f}%)")
+    print(f"est. tax liability: {est_tax:>10.2f} {config.quote_asset}  (on realised only, paid yearly)")
 
     reg_line = " · ".join(
-        f"{c.replace('USDT','')}:{regimes[c].value[0]}" for c in regimes
+        f"{c.replace(config.quote_asset,''):}:{regimes[c].value[0]}" for c in regimes
     )
     print(f"regime            : {reg_line}")
 
@@ -135,7 +135,7 @@ def main() -> None:
         price = prices.get(coin)
         if price is None:
             continue
-        cn = coin.replace("USDT", "")
+        cn = coin.replace(config.quote_asset, "")
         hold = broker.holds.get(coin)
         bags = broker.bags(coin)
         if hold:

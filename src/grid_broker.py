@@ -30,6 +30,8 @@ class GridBroker:
         self.realized: float = s["realized"]
         self.positions: dict[str, list[dict]] = s["positions"]
         self.holds: dict[str, dict] = s["holds"]   # per-coin BULL buy-&-hold
+        # capital reference for hold sizing / % display (real balance in live)
+        self.capital_base: float = config.paper_start_balance
 
     @property
     def backend(self) -> str:
@@ -135,7 +137,8 @@ class LiveGridBroker(GridBroker):
         super().__init__()                 # logical bags/holds/realized from store
         from . import binance_trade as bt
         self._bt = bt
-        self.cash = bt.free_usdt()         # real USDT balance is the truth
+        self.cash = bt.free_quote()        # real quote (USDC) balance is the truth
+        self.capital_base = self.cash      # size holds off real capital, safely
 
     @property
     def backend(self) -> str:
@@ -191,7 +194,7 @@ class LiveGridBroker(GridBroker):
         except Exception as exc:
             return [f"balance read failed: {str(exc)[:60]}"]
         for sym in set(self.positions) | set(self.holds):
-            base = sym.replace("USDT", "")
+            base = sym.replace(config.quote_asset, "")
             logical = sum(b["qty"] for b in self.bags(sym)) + \
                 (self.holds[sym]["qty"] if sym in self.holds else 0.0)
             actual = free.get(base, 0.0)
