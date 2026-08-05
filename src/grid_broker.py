@@ -138,7 +138,11 @@ class LiveGridBroker(GridBroker):
         from . import binance_trade as bt
         self._bt = bt
         self.cash = bt.free_quote()        # real quote (USDC) balance is the truth
-        self.capital_base = self.cash      # size holds off real capital, safely
+        # capital base = free cash + invested cost of all open bags/holds, so the
+        # %-return baseline reflects the WHOLE book, not just the un-deployed cash.
+        invested = sum(b["cost"] for bags in self.positions.values() for b in bags) \
+            + sum(h["cost"] for h in self.holds.values())
+        self.capital_base = self.cash + invested
 
     @property
     def backend(self) -> str:
