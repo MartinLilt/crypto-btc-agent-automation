@@ -164,9 +164,17 @@ class LiveGridBroker(GridBroker):
                              price=avg, qty=qty, usdt=quote, pnl=0.0)
         return bag
 
+    def _sellable(self, symbol: str, want: float) -> float:
+        """Cap the sell qty at the REAL free base balance. The buy fee is charged
+        in the base asset, so our ledger qty is a hair more than what's actually
+        on the exchange — selling the full ledger qty gets rejected (-2010)."""
+        base = symbol.replace(config.quote_asset, "")
+        free = self._bt.get_free_balances().get(base, 0.0)
+        return min(want, free)
+
     def sell_bag(self, symbol: str, index: int, price: float) -> float:
         bag = self.bags(symbol)[index]
-        resp = self._bt.market_sell(symbol, bag["qty"])
+        resp = self._bt.market_sell(symbol, self._sellable(symbol, bag["qty"]))
         qty, quote, avg = self._bt.fill_amounts(resp, price)
         self.bags(symbol).pop(index)
         self.cash += quote
@@ -188,7 +196,7 @@ class LiveGridBroker(GridBroker):
 
     def sell_hold(self, symbol: str, price: float) -> float:
         h = self.holds[symbol]
-        resp = self._bt.market_sell(symbol, h["qty"])
+        resp = self._bt.market_sell(symbol, self._sellable(symbol, h["qty"]))
         qty, quote, avg = self._bt.fill_amounts(resp, price)
         self.holds.pop(symbol)
         self.cash += quote
