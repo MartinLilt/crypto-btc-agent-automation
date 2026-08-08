@@ -92,6 +92,9 @@ def main() -> None:
                     actions.append(f"🛒 {c}: bought a bag @ {price:g}")
         except Exception as exc:
             note = " ⚠ORDER-FAILED"
+            # Full error to stdout (Railway logs) — Telegram only gets a truncated
+            # copy, so the exact Binance code/msg was invisible in the cloud logs.
+            print(f"  ⚠ {coin} ORDER FAILED — {type(exc).__name__}: {exc}")
             actions.append(f"⚠️ {c}: order failed — {str(exc)[:70]}")
 
         n = len(broker.bags(coin))
