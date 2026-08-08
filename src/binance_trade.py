@@ -68,12 +68,25 @@ def _lot_step(symbol: str) -> str:
     return _lot_cache[symbol]
 
 
+def _lot_places(symbol: str) -> int:
+    """Decimal places implied by the symbol's LOT_SIZE step."""
+    step = _lot_step(symbol).rstrip("0")
+    return len(step.split(".")[1]) if "." in step else 0
+
+
 def round_qty(symbol: str, qty: float) -> float:
     """Round DOWN to the symbol's LOT_SIZE step so the order is accepted."""
-    step = _lot_step(symbol).rstrip("0")
-    places = len(step.split(".")[1]) if "." in step else 0
-    factor = 10 ** places
+    factor = 10 ** _lot_places(symbol)
     return int(qty * factor) / factor
+
+
+def qty_str(symbol: str, qty: float) -> str:
+    """LOT_SIZE-rounded qty as a PLAIN decimal string (no scientific notation).
+
+    A small float like 0.00009 stringifies to '9e-05', whose 'e' Binance rejects
+    with -1100 'Illegal characters in parameter quantity'. Fixed-point format
+    avoids that for tiny quantities (e.g. a few-dollar BTC bag)."""
+    return f"{round_qty(symbol, qty):.{_lot_places(symbol)}f}"
 
 
 def market_buy(symbol: str, quote_usdt: float) -> dict:
@@ -84,11 +97,11 @@ def market_buy(symbol: str, quote_usdt: float) -> dict:
 
 
 def market_sell(symbol: str, qty: float) -> dict:
-    q = round_qty(symbol, qty)
-    if q <= 0:
+    if round_qty(symbol, qty) <= 0:
         raise TradeError(f"{symbol}: qty {qty} rounds below LOT_SIZE")
     return _signed("POST", "/api/v3/order", {
-        "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": q})
+        "symbol": symbol, "side": "SELL", "type": "MARKET",
+        "quantity": qty_str(symbol, qty)})
 
 
 def fill_amounts(resp: dict, fallback_price: float) -> tuple[float, float, float]:
