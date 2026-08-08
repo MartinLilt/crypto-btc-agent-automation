@@ -20,6 +20,47 @@ from src.regime import Regime, detect_regime, resample, tf_factor
 from src.universe import get_universe
 
 _REGIME_ICON = {Regime.BULL: "🟢BULL", Regime.NEUTRAL: "⚪NEUTRAL", Regime.BEAR: "🔴BEAR"}
+_REG_EMOJI = {Regime.BULL: "🟢", Regime.NEUTRAL: "⚪", Regime.BEAR: "🔴"}
+
+
+def _fmt_price(x: float) -> str:
+    """Compact, readable price across magnitudes (BTC 64k … XRP 1.04)."""
+    if x >= 1000:
+        return f"{x:,.0f}"
+    if x >= 1:
+        return f"{x:.2f}"
+    return f"{x:.4f}"
+
+
+# Positions rendered as a monospace, column-aligned table — no emoji INSIDE it
+# (emoji are double-width and break alignment in Telegram's <pre> block).
+_POS_HEADER = ("Монета", "Поз.", "Влож", "PnL%", "Ждёт")
+_POS_ALIGN = ("<", "<", ">", ">", "<")
+
+
+def _pos_table(rows: list[tuple[str, str, str, str, str]]) -> str:
+    """Aligned plain-text table (wrap in <pre> for Telegram, print raw to logs)."""
+    if not rows:
+        return "— открытых позиций нет —"
+    widths = [max(len(str(c)) for c in col) for col in zip(_POS_HEADER, *rows)]
+    def _row(r: tuple) -> str:
+        return "  ".join(f"{str(v):{a}{w}}" for v, a, w in zip(r, _POS_ALIGN, widths)).rstrip()
+    return "\n".join([_row(_POS_HEADER)] + [_row(r) for r in rows])
+
+
+def _tax_line(realized: float, quote: str) -> str:
+    """Dynamic Lithuania GPM estimate on YTD realised gains (recomputed each cycle
+    from the current realised total, after this iteration's trades). Lithuania taxes
+    gains from financial instruments at TAX_RATE (15%) above a TAX_ALLOWANCE
+    (€500/yr) exemption. Not deducted from equity — paid yearly from fiat."""
+    rate_pct = config.tax_rate * 100
+    allow = config.tax_allowance
+    est = max(0.0, realized - allow) * config.tax_rate
+    if realized <= allow:
+        return (f"🏛 Налог (Литва): 0.00 {quote} · прибыль {realized:+.2f} "
+                f"в пределах льготы {allow:.0f}€/год")
+    return (f"🏛 Налог (Литва, GPM {rate_pct:.0f}%): ~{est:.2f} {quote} · "
+            f"с прибыли {realized:.2f} за год свыше {allow:.0f}€")
 
 
 def main() -> None:
@@ -41,6 +82,7 @@ def main() -> None:
     regime_bars = (config.regime_ma + config.regime_slope_lookback + 5) * factor
     limit = max(p.sma_win + 60, regime_bars)
     actions: list[str] = []
+    errors: list[str] = []          # order failures / reconcile drift (own section)
     regimes: dict[str, Regime] = {}
 
     for coin in universe:
@@ -95,7 +137,7 @@ def main() -> None:
             # Full error to stdout (Railway logs) — Telegram only gets a truncated
             # copy, so the exact Binance code/msg was invisible in the cloud logs.
             print(f"  ⚠ {coin} ORDER FAILED — {type(exc).__name__}: {exc}")
-            actions.append(f"⚠️ {c}: order failed — {str(exc)[:70]}")
+            errors.append(f"❌ {c}: {str(exc)[:90]}")
 
         n = len(broker.bags(coin))
         hv = broker.hold_value(coin, price)
@@ -107,7 +149,7 @@ def main() -> None:
     # live safety: warn if the exchange balances drift from our ledger
     if hasattr(broker, "reconcile"):
         for w in broker.reconcile(prices):
-            actions.append(f"🔎 reconcile: {w}")
+            errors.append(f"🔎 reconcile: {w}")
 
     # ── portfolio summary (mark-to-market) ───────────────────────────────
     equity = broker.equity(prices)
@@ -133,7 +175,7 @@ def main() -> None:
     print(f"regime            : {reg_line}")
 
     # ── per-coin position detail (what each position is waiting for) ──────
-    pos_lines: list[str] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     for coin in universe:
         price = prices.get(coin)
         if price is None:
@@ -143,38 +185,47 @@ def main() -> None:
         bags = broker.bags(coin)
         if hold:
             pnlp = (hold["qty"] * price - hold["cost"]) / hold["cost"] * 100
-            pos_lines.append(
-                f"🟢 <b>{cn}</b> hold ${hold['cost']:.0f} · вход {hold['entry']:g} · "
-                f"сейчас {price:g} ({pnlp:+.1f}%) · едет ↑, ждёт конца BULL")
+            rows.append((cn, "hold", f"${hold['cost']:.0f}", f"{pnlp:+.1f}%", "конца BULL"))
         if bags:
             qty = sum(b["qty"] for b in bags)
             invested = sum(b["cost"] for b in bags)
-            avg = sum(b["entry"] * b["qty"] for b in bags) / qty
             pnlp = (qty * price - invested) / invested * 100
             tp_lo = min(b["entry"] for b in bags) * (1 + p.tp_pct / 100)
-            icon = "🔴" if regimes[coin] is Regime.BEAR else "⚪"
-            pos_lines.append(
-                f"{icon} <b>{cn}</b> {len(bags)} меш · ${invested:.0f} · "
-                f"ср.вход {avg:g} · сейчас {price:g} ({pnlp:+.1f}%) · продаст от {tp_lo:g}")
-    if not pos_lines:
-        pos_lines = ["— открытых позиций нет —"]
-    print("positions:\n  " + "\n  ".join(pos_lines))
+            rows.append((cn, f"меш×{len(bags)}", f"${invested:.0f}",
+                         f"{pnlp:+.1f}%", f"≥{_fmt_price(tp_lo)}"))
+    pos_table = _pos_table(rows)
+    print("positions:\n" + pos_table)
+
+    # per-coin market tendency (trend), spelled out with emoji
+    reg_tg = "🧭 Тренд: " + " · ".join(
+        f"{c.replace(config.quote_asset, '')} {_REG_EMOJI[regimes[c]]}" for c in regimes
+    )
 
     # ── Telegram results output ──────────────────────────────────────────
     if notify.enabled():
+        equity_pct = (equity / start - 1) * 100
+        feast_pct = (feast / start - 1) * 100
+        pos_block = f"<pre>{pos_table}</pre>" if rows else f"<i>{pos_table}</i>"
         lines = [
             f"<b>🌊 Grid-stream</b> · {config.trading_mode.upper()} · {config.interval}",
-            f"📊 Счёт: <b>{equity:.0f}</b> ({(equity/start-1)*100:+.2f}%) · кэш {broker.cash:.0f}",
-            f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> · 🎉 Пир: {feast:.0f} ({(feast/start-1)*100:+.1f}%)",
-            f"🏛 налог (оценка, с realized): {est_tax:.2f} · платится раз в год",
-            f"🧺 {broker.total_bags} меш · 🟢 {n_holds} hold · 🗄 {broker.backend}",
-            f"🧭 {reg_line}",
             "",
+            f"📊 Счёт: <b>{equity:.0f}</b> ({equity_pct:+.2f}%) · кэш {broker.cash:.0f}",
+            f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> {config.quote_asset}",
+            f"🎉 Пир: {feast:.0f} ({feast_pct:+.1f}%)",
+            "",
+            f"🧺 {broker.total_bags} меш · 🟢 {n_holds} hold",
+            reg_tg,
+            "🟢 рост · ⚪ флэт · 🔴 падение",
             "<b>📦 Позиции (чего ждут):</b>",
-            *pos_lines,
+            pos_block,
+            "",
+            _tax_line(broker.realized, config.quote_asset),
+            "",
+            "<b>⚡️ Действия за цикл:</b>",
+            *(actions or ["<i>— без сделок в этом цикле —</i>"]),
         ]
-        if actions:
-            lines += ["", "<b>⚡ Действия за цикл:</b>", *actions]
+        if errors:
+            lines += ["", "<b>⚠️ Ошибки за цикл:</b>", *errors]
         notify.send("\n".join(lines))
 
 
