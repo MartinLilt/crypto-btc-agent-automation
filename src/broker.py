@@ -166,39 +166,29 @@ class LiveBroker:
         return Position(quote=quote, base=base)
 
     def buy(self, price: float) -> Trade:
+        # Numeric params as plain strings — a bare float can stringify to
+        # scientific notation and Binance rejects it (-1100). See binance_trade.
         r = self._signed(
             "POST", "/api/v3/order",
             {"symbol": config.symbol, "side": "BUY", "type": "MARKET",
-             "quoteOrderQty": config.quote_order_qty},
+             "quoteOrderQty": f"{config.quote_order_qty:.2f}"},
         )
         return self._trade_from_fill("BUY", r, price)
 
     def sell(self, price: float) -> Trade:
+        from .binance_trade import qty_str          # shared -1100-safe formatter
         base_qty = self.position.base
         if base_qty <= 0:
             raise BrokerError("no base balance to sell")
-        qty = self._round_lot(base_qty)
+        qty = qty_str(config.symbol, base_qty)
+        if float(qty) <= 0:
+            raise BrokerError(f"qty {base_qty} rounds below LOT_SIZE")
         r = self._signed(
             "POST", "/api/v3/order",
             {"symbol": config.symbol, "side": "SELL", "type": "MARKET",
              "quantity": qty},
         )
         return self._trade_from_fill("SELL", r, price)
-
-    def _round_lot(self, qty: float) -> float:
-        """Round down to the symbol's LOT_SIZE step so the order is accepted."""
-        info = requests.get(
-            f"{self.base_url}/api/v3/exchangeInfo",
-            params={"symbol": config.symbol}, timeout=_TIMEOUT,
-        ).json()
-        step = "0.00001"
-        for f in info["symbols"][0]["filters"]:
-            if f["filterType"] == "LOT_SIZE":
-                step = f["stepSize"]
-        decimals = step.rstrip("0")
-        places = len(decimals.split(".")[1]) if "." in decimals else 0
-        factor = 10 ** places
-        return int(qty * factor) / factor
 
     @staticmethod
     def _trade_from_fill(side: str, resp: dict, price: float) -> Trade:

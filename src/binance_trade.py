@@ -91,9 +91,11 @@ def qty_str(symbol: str, qty: float) -> str:
 
 def market_buy(symbol: str, quote_usdt: float) -> dict:
     """Spend `quote_usdt` USDT on a market buy (quoteOrderQty — no qty rounding)."""
+    # Plain fixed-point string, same reasoning as qty_str: never risk a float
+    # stringifying to scientific notation in an API parameter (Binance -1100).
     return _signed("POST", "/api/v3/order", {
         "symbol": symbol, "side": "BUY", "type": "MARKET",
-        "quoteOrderQty": round(quote_usdt, 2)})
+        "quoteOrderQty": f"{quote_usdt:.2f}"})
 
 
 def market_sell(symbol: str, qty: float) -> dict:
