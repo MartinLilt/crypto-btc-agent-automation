@@ -38,6 +38,11 @@ class GridResult:
     peak_bags: int
     recovery_equity: float = 0.0   # if every frozen bag eventually hits its TP
     equity_curve: list = field(default_factory=list)
+    # ── stagnation metrics (bars; 4h → 6 bars/day) ──
+    avg_hold_bars: float = 0.0     # mean bars a SOLD bag was held (turnover speed)
+    max_hold_bars: int = 0         # worst freeze among sold bags
+    end_max_age_bars: int = 0      # oldest STILL-open bag at the end
+    frozen_cap_pct: float = 0.0    # time-avg of underwater bag cost / start (%)
 
     @property
     def return_pct(self) -> float:
@@ -58,33 +63,56 @@ def run_grid(
     fee: float = FEE,
     block_entry: list | None = None,   # per-bar: True = don't open a new bag
     max_bags: int = 0,                 # cap concurrent bags (0 = unlimited)
+    pool_tp: bool = False,             # True = sell the WHOLE stack at avg-cost+TP
+                                       #        (idea #1) instead of per-bag TP
 ) -> GridResult:
     cash = start_balance
-    bags: list[dict] = []      # each: {entry, qty, cost}
+    bags: list[dict] = []      # each: {entry, qty, cost, i}  (i = open bar index)
     realized = 0.0
     closed = 0
     peak_eq = start_balance
     mdd = 0.0
     peak_bags = 0
     curve = []
+    hold_sum = 0        # Σ bars held over all sold bags
+    hold_max = 0        # worst single freeze among sold bags
+    frozen_bar_sum = 0.0   # Σ over bars of (underwater bag cost)
 
     for i, c in enumerate(candles):
         price = c.close
         blocked = block_entry is not None and block_entry[i]
 
-        # 1. exits — take-profit on any bag, or stop-loss (scalp mode only)
-        keep = []
-        for b in bags:
-            hit_tp = price >= b["entry"] * (1 + tp_pct / 100)
-            hit_sl = stop_pct and price <= b["entry"] * (1 - stop_pct / 100)
-            if hit_tp or hit_sl:
-                proceeds = b["qty"] * price * (1 - fee)
+        # 1. exits
+        if pool_tp and bags:
+            # Idea #1: sell the ENTIRE stack once price reaches the cost-weighted
+            # average entry + TP. A small bounce to the average releases every
+            # frozen bag at once (winners carry laggards) → faster feast.
+            tot_qty = sum(b["qty"] for b in bags)
+            tot_cost = sum(b["cost"] for b in bags)
+            avg = tot_cost / tot_qty
+            if price >= avg * (1 + tp_pct / 100):
+                proceeds = tot_qty * price * (1 - fee)
                 cash += proceeds
-                realized += proceeds - b["cost"]
-                closed += 1
-            else:
-                keep.append(b)
-        bags = keep
+                realized += proceeds - tot_cost
+                for b in bags:
+                    held = i - b["i"]; hold_sum += held; hold_max = max(hold_max, held)
+                closed += len(bags)
+                bags = []
+        else:
+            # take-profit on any bag, or stop-loss (scalp mode only)
+            keep = []
+            for b in bags:
+                hit_tp = price >= b["entry"] * (1 + tp_pct / 100)
+                hit_sl = stop_pct and price <= b["entry"] * (1 - stop_pct / 100)
+                if hit_tp or hit_sl:
+                    proceeds = b["qty"] * price * (1 - fee)
+                    cash += proceeds
+                    realized += proceeds - b["cost"]
+                    held = i - b["i"]; hold_sum += held; hold_max = max(hold_max, held)
+                    closed += 1
+                else:
+                    keep.append(b)
+            bags = keep
 
         # 2. entry — first bag, or add one when price fell grid_step below the
         #    lowest open bag (buy the dip deeper). Capped by available cash.
@@ -94,25 +122,37 @@ def run_grid(
         if want and cash >= unit_usdt and not blocked and not capped:
             fee_paid = unit_usdt * fee
             qty = (unit_usdt - fee_paid) / price
-            bags.append({"entry": price, "qty": qty, "cost": unit_usdt})
+            bags.append({"entry": price, "qty": qty, "cost": unit_usdt, "i": i})
             cash -= unit_usdt
 
-        # 3. mark-to-market equity
+        # 3. mark-to-market equity + stagnation accounting
         equity = cash + sum(b["qty"] * price for b in bags)
         curve.append(equity)
         peak_eq = max(peak_eq, equity)
         if peak_eq > 0:
             mdd = max(mdd, (peak_eq - equity) / peak_eq)
         peak_bags = max(peak_bags, len(bags))
+        frozen_bar_sum += sum(b["cost"] for b in bags if price < b["entry"])
 
     last = candles[-1].close
     end_eq = cash + sum(b["qty"] * last for b in bags)
-    # "Bull recovery" payoff: every frozen bag eventually sells at its own TP.
-    recovery = cash + sum(
-        b["qty"] * b["entry"] * (1 + tp_pct / 100) * (1 - fee) for b in bags
-    )
+    # "Bull recovery" payoff (feast): every frozen bag eventually reaches its exit.
+    if pool_tp and bags:
+        # pool mode exits the whole stack at the average entry + TP
+        tot_qty = sum(b["qty"] for b in bags)
+        avg = sum(b["cost"] for b in bags) / tot_qty
+        recovery = cash + tot_qty * avg * (1 + tp_pct / 100) * (1 - fee)
+    else:
+        recovery = cash + sum(
+            b["qty"] * b["entry"] * (1 + tp_pct / 100) * (1 - fee) for b in bags
+        )
+    n = len(candles) or 1
+    avg_hold = hold_sum / closed if closed else 0.0
+    end_max_age = max((len(candles) - 1 - b["i"] for b in bags), default=0)
+    frozen_cap = frozen_bar_sum / (n * start_balance) * 100
     return GridResult(start_balance, end_eq, cash, len(bags), realized, closed,
-                      mdd * 100, peak_bags, recovery, curve)
+                      mdd * 100, peak_bags, recovery, curve,
+                      avg_hold, hold_max, end_max_age, frozen_cap)
 
 
 def _report(label, r: GridResult, bh: float) -> None:
