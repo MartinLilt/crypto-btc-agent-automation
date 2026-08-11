@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from src.binance_api import get_candles
 from src.config import config
-from src.grid import is_uptrend, params_from_config, plan_actions
+from dataclasses import replace
+
+from src.grid import effective_unit, is_uptrend, params_from_config, plan_actions
 from src.grid_broker import get_grid_broker
 from src import notify
 from src.regime import Regime, detect_regime, resample, tf_factor
@@ -92,6 +94,16 @@ def main() -> None:
 
     broker = get_grid_broker()
     print(f"storage           : {broker.backend}")
+
+    # Bag size for this cycle. When GRID_UNIT_PCT>0 it tracks the live balance,
+    # so a deposit auto-scales the bags (with a min-notional floor).
+    unit = effective_unit(broker.capital_base)
+    p = replace(p, unit_usdt=unit)
+    if config.grid_unit_pct > 0:
+        print(f"bag sizing        : {config.grid_unit_pct * 100:.2f}% of "
+              f"{broker.capital_base:.2f} → unit {unit:.2f} "
+              f"(floor {config.grid_min_unit:.2f})")
+
     prices: dict[str, float] = {}
     # Enough 4h candles for the grid SMA AND the higher-TF regime (resampled).
     factor = tf_factor(config.interval, config.regime_interval)
@@ -176,7 +188,15 @@ def main() -> None:
     # Estimated tax LIABILITY on realised gains only (annual, above allowance) —
     # NOT deducted from equity: you pay it yearly from fiat, and open bags aren't taxed.
     est_tax = max(0.0, broker.realized - config.tax_allowance) * config.tax_rate
+    # deposit/withdrawal since last cycle (live) — ignore fee/dust noise
+    flow = broker.external_flow
+    flow_line = None
+    if abs(flow) > max(1.0, 0.005 * start):
+        flow_line = (f"💰 Пополнение: +{flow:.2f} {config.quote_asset}" if flow > 0
+                     else f"🏧 Вывод: {flow:.2f} {config.quote_asset}")
     print("\n" + "-" * 60)
+    if flow_line:
+        print(flow_line)
     print(f"cash              : {broker.cash:>10.2f} {config.quote_asset}")
     print(f"open bags         : {broker.total_bags} across {n_coins} coins")
     print(f"bull holds        : {n_holds} ({', '.join(broker.holds) or '—'})")
@@ -223,6 +243,7 @@ def main() -> None:
             f"📊 Счёт: <b>{equity:.0f}</b> ({equity_pct:+.2f}%) · кэш {broker.cash:.0f}",
             f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> {config.quote_asset}",
             f"🎉 Пир: {feast:.0f} ({feast_pct:+.1f}%)",
+            *([f"<b>{flow_line}</b>"] if flow_line else []),
             "",
             f"🧺 Мешков: {broker.total_bags} · 💼 Холдов: {n_holds}",
             *_trend_summary(regimes),

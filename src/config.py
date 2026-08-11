@@ -70,7 +70,10 @@ class Config:
     max_hold_bars: int         # force exit after N bars (0 = off)
     grid_tp_pct: float         # micro take-profit per bag (the stream)
     grid_step_pct: float       # add a bag when price drops this % below lowest bag
-    grid_unit_usdt: float      # USDT per bag
+    grid_unit_usdt: float      # fixed quote per bag (used when grid_unit_pct == 0)
+    grid_unit_pct: float       # >0: size each bag as this fraction of live capital
+                               #     (auto-scales with deposits); 0 = fixed unit
+    grid_min_unit: float       # floor for a pct-sized bag (Binance min-notional)
     grid_max_bags: int         # max concurrent bags per coin
     grid_sma: int              # uptrend filter window (no new bags below it)
     regime_adaptive: bool      # switch grid behaviour by market regime
@@ -131,6 +134,8 @@ config = Config(
     grid_tp_pct=float(os.getenv("GRID_TP_PCT", "0.8")),
     grid_step_pct=float(os.getenv("GRID_STEP_PCT", "1.5")),
     grid_unit_usdt=float(os.getenv("GRID_UNIT_USDT", "40")),
+    grid_unit_pct=float(os.getenv("GRID_UNIT_PCT", "0")),
+    grid_min_unit=float(os.getenv("GRID_MIN_UNIT", "6")),
     grid_max_bags=int(os.getenv("GRID_MAX_BAGS", "8")),
     grid_sma=int(os.getenv("GRID_SMA", "100")),
     regime_adaptive=_bool("REGIME_ADAPTIVE", True),

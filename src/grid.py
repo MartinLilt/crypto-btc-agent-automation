@@ -37,6 +37,15 @@ def params_from_config() -> GridParams:
     )
 
 
+def effective_unit(capital_base: float) -> float:
+    """Bag size for this cycle. Fixed `grid_unit_usdt` by default; when
+    `grid_unit_pct` > 0, size the bag as that fraction of live capital (so it
+    auto-scales when the balance is topped up) with a min-notional floor."""
+    if config.grid_unit_pct > 0:
+        return max(config.grid_min_unit, config.grid_unit_pct * capital_base)
+    return config.grid_unit_usdt
+
+
 def is_uptrend(closes: list[float], sma_win: int) -> bool | None:
     """True if price is above its long SMA (rising tide); None if too few bars."""
     m = sma(closes, sma_win)

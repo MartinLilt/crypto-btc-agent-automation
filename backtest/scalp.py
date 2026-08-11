@@ -65,6 +65,9 @@ def run_grid(
     max_bags: int = 0,                 # cap concurrent bags (0 = unlimited)
     pool_tp: bool = False,             # True = sell the WHOLE stack at avg-cost+TP
                                        #        (idea #1) instead of per-bag TP
+    unit_pct: float = 0.0,             # >0 = size each bag as this fraction of live
+                                       #      equity (auto-scales) with a min floor
+    min_unit: float = 6.0,             # min-notional floor for a pct-sized bag
 ) -> GridResult:
     cash = start_balance
     bags: list[dict] = []      # each: {entry, qty, cost, i}  (i = open bar index)
@@ -119,11 +122,16 @@ def run_grid(
         lowest = min((b["entry"] for b in bags), default=None)
         want = lowest is None or price <= lowest * (1 - grid_step_pct / 100)
         capped = max_bags and len(bags) >= max_bags
-        if want and cash >= unit_usdt and not blocked and not capped:
-            fee_paid = unit_usdt * fee
-            qty = (unit_usdt - fee_paid) / price
-            bags.append({"entry": price, "qty": qty, "cost": unit_usdt, "i": i})
-            cash -= unit_usdt
+        if unit_pct > 0:
+            equity_now = cash + sum(b["qty"] * price for b in bags)
+            u = max(min_unit, unit_pct * equity_now)
+        else:
+            u = unit_usdt
+        if want and cash >= u and not blocked and not capped:
+            fee_paid = u * fee
+            qty = (u - fee_paid) / price
+            bags.append({"entry": price, "qty": qty, "cost": u, "i": i})
+            cash -= u
 
         # 3. mark-to-market equity + stagnation accounting
         equity = cash + sum(b["qty"] * price for b in bags)

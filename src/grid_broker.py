@@ -34,6 +34,7 @@ class GridBroker:
         self.realized: float = s["realized"]
         self.positions: dict[str, list[dict]] = s["positions"]
         self.holds: dict[str, dict] = s["holds"]   # per-coin BULL buy-&-hold
+        self.external_flow: float = 0.0             # deposit/withdrawal since last cycle (live)
         # capital reference for hold sizing / % display (real balance in live)
         self.capital_base: float = config.paper_start_balance
 
@@ -139,9 +140,14 @@ class LiveGridBroker(GridBroker):
         if config.trading_mode != "live":
             raise BrokerError("LiveGridBroker requires TRADING_MODE=live")
         super().__init__()                 # logical bags/holds/realized from store
+        stored_cash = self.cash            # cash we persisted at the end of last cycle
         from . import binance_trade as bt
         self._bt = bt
         self.cash = bt.free_quote()        # real quote (USDC) balance is the truth
+        # External flow since last save = deposits/withdrawals (nothing but our own
+        # orders touches the balance between cycles, and those were baked into
+        # stored_cash). Small noise (fees/dust) is ignored by the report threshold.
+        self.external_flow = self.cash - stored_cash
         # capital base = free cash + invested cost of all open bags/holds, so the
         # %-return baseline reflects the WHOLE book, not just the un-deployed cash.
         invested = sum(b["cost"] for bags in self.positions.values() for b in bags) \
