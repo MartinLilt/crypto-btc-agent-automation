@@ -206,8 +206,18 @@ class LiveGridBroker(GridBroker):
                              price=avg, qty=qty, usdt=quote, pnl=pnl)
         return pnl
 
+    # Drift must exceed BOTH a relative and an absolute floor to be worth a
+    # warning: bags are tiny ($5), so sub-dollar dust trips 5% on its own and
+    # spams the report with harmless noise.
+    RECONCILE_REL = 0.05        # 5% of the logical qty
+    RECONCILE_ABS_USD = 1.0     # ...and at least $1 of coin
+
     def reconcile(self, prices: dict[str, float]) -> list[str]:
-        """Safety: warn if exchange coin balances drift from our logical ledger."""
+        """Safety: warn if exchange coin balances drift from our logical ledger.
+
+        Only surfaces material drift (> RECONCILE_REL *and* > RECONCILE_ABS_USD).
+        Read-only: never trades — a warning is a heads-up, not an action.
+        """
         warnings = []
         try:
             free = self._bt.get_free_balances()
@@ -218,8 +228,14 @@ class LiveGridBroker(GridBroker):
             logical = sum(b["qty"] for b in self.bags(sym)) + \
                 (self.holds[sym]["qty"] if sym in self.holds else 0.0)
             actual = free.get(base, 0.0)
-            if logical > 0 and abs(actual - logical) / logical > 0.05:
-                warnings.append(f"{base}: ledger {logical:.6f} vs exchange {actual:.6f}")
+            if logical <= 0:
+                continue
+            diff = abs(actual - logical)
+            usd = diff * prices.get(sym, 0.0)
+            if diff / logical > self.RECONCILE_REL and usd > self.RECONCILE_ABS_USD:
+                warnings.append(
+                    f"{base}: ledger {logical:.6f} vs exchange {actual:.6f} "
+                    f"(~${usd:.2f})")
         return warnings
 
 

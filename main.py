@@ -20,7 +20,6 @@ from src.regime import Regime, detect_regime, resample, tf_factor
 from src.universe import get_universe
 
 _REGIME_ICON = {Regime.BULL: "🟢BULL", Regime.NEUTRAL: "⚪NEUTRAL", Regime.BEAR: "🔴BEAR"}
-_REG_EMOJI = {Regime.BULL: "🟢", Regime.NEUTRAL: "⚪", Regime.BEAR: "🔴"}
 
 
 def _fmt_price(x: float) -> str:
@@ -61,6 +60,23 @@ def _tax_line(realized: float, quote: str) -> str:
                 f"в пределах льготы {allow:.0f}€/год")
     return (f"🏛 Налог (Литва, GPM {rate_pct:.0f}%): ~{est:.2f} {quote} · "
             f"с прибыли {realized:.2f} за год свыше {allow:.0f}€")
+
+
+_TREND_WORD = {Regime.BULL: "растут", Regime.NEUTRAL: "в боковике", Regime.BEAR: "падают"}
+_TREND_LABEL = {Regime.BULL: "📈 Растут", Regime.NEUTRAL: "➡️ Боковик", Regime.BEAR: "📉 Падают"}
+
+
+def _trend_summary(regimes: dict) -> list[str]:
+    """Per-coin market tendency spelled out in plain words — coins grouped by state,
+    no per-coin circles and no legend to decode. Only non-empty groups are shown;
+    when every coin sits in one state we collapse it to a single 'все …' line."""
+    buckets = {Regime.BULL: [], Regime.NEUTRAL: [], Regime.BEAR: []}
+    for sym, reg in regimes.items():
+        buckets[reg].append(sym.replace(config.quote_asset, ""))
+    filled = [(reg, coins) for reg, coins in buckets.items() if coins]
+    if len(filled) == 1:
+        return [f"🧭 Тренд: все {_TREND_WORD[filled[0][0]]}"]
+    return [f"{_TREND_LABEL[reg]}: {', '.join(coins)}" for reg, coins in filled]
 
 
 def main() -> None:
@@ -196,11 +212,6 @@ def main() -> None:
     pos_table = _pos_table(rows)
     print("positions:\n" + pos_table)
 
-    # per-coin market tendency (trend), spelled out with emoji
-    reg_tg = "🧭 Тренд: " + " · ".join(
-        f"{c.replace(config.quote_asset, '')} {_REG_EMOJI[regimes[c]]}" for c in regimes
-    )
-
     # ── Telegram results output ──────────────────────────────────────────
     if notify.enabled():
         equity_pct = (equity / start - 1) * 100
@@ -213,9 +224,8 @@ def main() -> None:
             f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> {config.quote_asset}",
             f"🎉 Пир: {feast:.0f} ({feast_pct:+.1f}%)",
             "",
-            f"🧺 {broker.total_bags} меш · 🟢 {n_holds} hold",
-            reg_tg,
-            "🟢 рост · ⚪ флэт · 🔴 падение",
+            f"🧺 Мешков: {broker.total_bags} · 💼 Холдов: {n_holds}",
+            *_trend_summary(regimes),
             "<b>📦 Позиции (чего ждут):</b>",
             pos_block,
             "",

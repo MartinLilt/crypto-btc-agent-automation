@@ -93,7 +93,7 @@ config = Config(
         c.strip().upper()
         for c in os.getenv(
             "TARGET_COINS",
-            "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,"
+            "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,ADAUSDT,"
             "LTCUSDT,DOGEUSDT,LINKUSDT,AVAXUSDT",
         ).split(",")
         if c.strip()
