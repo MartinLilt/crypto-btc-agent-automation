@@ -16,6 +16,7 @@ floor pins small accounts regardless of the percentage.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 
 from src.binance_api import get_candles
 from src.config import config
@@ -26,10 +27,12 @@ from backtest.scalp import run_grid
 _P = params_from_config()
 BASKET = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
 MIN_UNIT = config.grid_min_unit          # Binance min-notional floor (~$6)
-STARTS = [22.0, 500.0, 5000.0]
-# (label, unit_pct)  — pct 0 = fixed $MIN_UNIT bag (current live style)
+STARTS = [22.0, 500.0, 5000.0, 10000.0]
+# live bag-sizing = 0.4% (marked ◀); others shown for context / risk-dial view
+CUR_PCT = config.grid_unit_pct or 0.004
 MODES = [("fixed $6", 0.0), ("pct 0.4%", 0.004),
          ("pct 1.0%", 0.010), ("pct 2.0%", 0.020)]
+SINCE = "2025-01-20"                      # Trump inauguration (default window start)
 
 
 def _block(closes, win):
@@ -39,7 +42,9 @@ def _block(closes, win):
 
 def main(argv):
     interval = argv[0] if len(argv) > 0 else "4h"
-    limit = int(argv[1]) if len(argv) > 1 else 6000
+    limit = int(argv[1]) if len(argv) > 1 else 4000
+    since = argv[2] if len(argv) > 2 else SINCE
+    since_dt = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
     data = {}
     for coin in BASKET:
@@ -47,17 +52,26 @@ def main(argv):
             candles = get_candles(symbol=coin, interval=interval, limit=limit)
         except Exception as exc:
             print(f"  ({coin} skipped: {str(exc)[:50]})"); continue
-        if len(candles) < _P.sma_win + 50:
+        # SMA gate needs warm-up history BEFORE the window, so build the uptrend
+        # block on the FULL series, then slice both to the window (from `since`).
+        block_full = _block([c.close for c in candles], _P.sma_win)
+        keep = [i for i, c in enumerate(candles) if c.open_time >= since_dt]
+        if len(keep) < _P.sma_win:
             continue
-        data[coin] = (candles, _block([c.close for c in candles], _P.sma_win))
+        wc = [candles[i] for i in keep]
+        wb = [block_full[i] for i in keep]
+        data[coin] = (wc, wb)
     if not data:
         print("no data"); return
 
     span = next(iter(data.values()))[0]
     span = f"{span[0].open_time:%Y-%m-%d} → {span[-1].open_time:%Y-%m-%d}"
-    print(f"Dynamic sizing | live basket {BASKET} | {interval} | {span}")
-    print(f"step {_P.step_pct}% · TP {_P.tp_pct}% · max {_P.max_bags} bags · "
-          f"SMA{_P.sma_win} · min-notional floor ${MIN_UNIT:.0f}\n")
+    print(f"Dynamic sizing | live basket {BASKET} | {interval} | {span} "
+          f"(since Trump inauguration)")
+    print(f"CURRENT LIVE cfg: step {_P.step_pct}% · TP {_P.tp_pct}% · max {_P.max_bags} bags · "
+          f"SMA{_P.sma_win} · sizing {CUR_PCT*100:.1f}% ◀ · floor ${MIN_UNIT:.0f}")
+    print("NOTE: grid sleeve only (uptrend-gated). Does NOT model the BULL buy-&-hold "
+          "overlay\n      or BEAR-no-buy — those live in the runner, not this sim.\n")
     print(f"  {'start':>7} {'mode':>9} {'unit@start':>10} | {'stream%':>8} "
           f"{'equity%':>8} {'dd':>5} {'peakbags':>8} {'frozen%':>7}")
     print("  " + "-" * 78)
@@ -80,9 +94,10 @@ def main(argv):
             n = len(data)
             # normalise stream / equity to % of the per-coin start (basket = n coins)
             base = start * n
+            mark = " ◀" if abs(pct - CUR_PCT) < 1e-9 else ""
             print(f"  {start:>7.0f} {label:>9} {unit_at_start:>9.2f}$ | "
                   f"{stream / base * 100:>+7.2f}% {eq / base * 100:>+7.2f}% "
-                  f"{dd / n:>4.1f}% {peak:>8} {frozen / n:>6.2f}%")
+                  f"{dd / n:>4.1f}% {peak:>8} {frozen / n:>6.2f}%{mark}")
         print()
 
     print("  unit@start = bag size at the starting balance. Where it equals the "
