@@ -64,21 +64,60 @@ def _tax_line(realized: float, quote: str) -> str:
             f"с прибыли {realized:.2f} за год свыше {allow:.0f}€")
 
 
-_TREND_WORD = {Regime.BULL: "растут", Regime.NEUTRAL: "в боковике", Regime.BEAR: "падают"}
+_MARKET_WORD = {Regime.BULL: "растёт 📈", Regime.NEUTRAL: "спокойный, боковик 😴",
+                Regime.BEAR: "падает 📉"}
 _TREND_LABEL = {Regime.BULL: "📈 Растут", Regime.NEUTRAL: "➡️ Боковик", Regime.BEAR: "📉 Падают"}
 
 
 def _trend_summary(regimes: dict) -> list[str]:
     """Per-coin market tendency spelled out in plain words — coins grouped by state,
     no per-coin circles and no legend to decode. Only non-empty groups are shown;
-    when every coin sits in one state we collapse it to a single 'все …' line."""
+    when every coin sits in one state we collapse it to a single 'рынок …' line."""
     buckets = {Regime.BULL: [], Regime.NEUTRAL: [], Regime.BEAR: []}
     for sym, reg in regimes.items():
         buckets[reg].append(sym.replace(config.quote_asset, ""))
     filled = [(reg, coins) for reg, coins in buckets.items() if coins]
     if len(filled) == 1:
-        return [f"🧭 Тренд: все {_TREND_WORD[filled[0][0]]}"]
+        return [f"🧭 Рынок: {_MARKET_WORD[filled[0][0]]}"]
     return [f"{_TREND_LABEL[reg]}: {', '.join(coins)}" for reg, coins in filled]
+
+
+def _sells_message(sells: list[dict], quote: str) -> str | None:
+    """Second Telegram message — the last N closed sells as a plain win/loss ledger.
+
+    One row per sell: date, coin, profit in USDC, and % return, with a ✅/❌ mark
+    so a non-trader can see at a glance whether each trade landed in the green.
+    The mark sits LAST on each row (emoji are double-width and would otherwise
+    shift the monospace columns)."""
+    if not sells:
+        return None
+    wins = sum(1 for s in sells if (s.get("pnl") or 0.0) >= 0)
+    losses = len(sells) - wins
+    total = sum((s.get("pnl") or 0.0) for s in sells)
+
+    body: list[tuple[str, str, str, str, str]] = []
+    for s in sells:
+        pnl = s.get("pnl") or 0.0
+        cost = (s.get("usdt") or 0.0) - pnl          # proceeds − pnl = original cost
+        pct = (pnl / cost * 100) if cost > 0 else 0.0
+        ts = s.get("ts")
+        date = ts.strftime("%d.%m") if hasattr(ts, "strftime") else "—"
+        coin = s["symbol"].replace(quote, "")
+        body.append((date, coin, f"{pnl:+.2f}", f"{pct:+.1f}%",
+                     "✅" if pnl >= 0 else "❌"))
+
+    header = ("Дата", "Монета", "Прибыль", "%")
+    align = ("<", "<", ">", ">")
+    widths = [max(len(str(c)) for c in col)
+              for col in zip(header, *[r[:4] for r in body])]
+    def _row4(r: tuple) -> str:
+        return "  ".join(f"{str(v):{a}{w}}" for v, a, w in zip(r, align, widths))
+    table = "\n".join([_row4(header)] + [f"{_row4(r[:4])}  {r[4]}" for r in body])
+
+    return (f"<b>📜 История продаж (последние {len(sells)})</b>\n"
+            f"🟢 в плюс: {wins} · 🔴 в минус: {losses} · "
+            f"итог: <b>{total:+.2f}</b> {quote}\n"
+            f"<pre>{table}</pre>")
 
 
 def main() -> None:
@@ -236,16 +275,21 @@ def main() -> None:
     if notify.enabled():
         equity_pct = (equity / start - 1) * 100
         feast_pct = (feast / start - 1) * 100
+        invested = equity - broker.cash          # value sitting inside open positions
+        # plain-language verdict on the banked profit — the bottom-line number
+        verdict = ("✅ в плюсе" if broker.realized > 0
+                   else "❌ пока в минусе" if broker.realized < 0 else "· по нулям")
         pos_block = f"<pre>{pos_table}</pre>" if rows else f"<i>{pos_table}</i>"
         lines = [
             f"<b>🌊 Grid-stream</b> · {config.trading_mode.upper()} · {config.interval}",
             "",
-            f"📊 Счёт: <b>{equity:.0f}</b> ({equity_pct:+.2f}%) · кэш {broker.cash:.0f}",
-            f"💵 Ручеёк: <b>{broker.realized:+.2f}</b> {config.quote_asset}",
-            f"🎉 Пир: {feast:.0f} ({feast_pct:+.1f}%)",
+            f"💰 Всего на счету: <b>{equity:.0f}</b> {config.quote_asset} ({equity_pct:+.1f}%)",
+            f"     свободно {broker.cash:.0f} · в закупках {invested:.0f}",
+            f"💵 Заработано всего: <b>{broker.realized:+.2f}</b> {config.quote_asset} — {verdict}",
+            f"🎯 Если все закупки отработают: {feast:.0f} ({feast_pct:+.1f}%)",
             *([f"<b>{flow_line}</b>"] if flow_line else []),
             "",
-            f"🧺 Мешков: {broker.total_bags} · 💼 Холдов: {n_holds}",
+            f"🛒 Открытых закупок: {broker.total_bags} · 💼 Холдов: {n_holds}",
             *_trend_summary(regimes),
             "<b>📦 Позиции (чего ждут):</b>",
             pos_block,
@@ -258,6 +302,11 @@ def main() -> None:
         if errors:
             lines += ["", "<b>⚠️ Ошибки за цикл:</b>", *errors]
         notify.send("\n".join(lines))
+
+        # Second message: the recent-sells win/loss ledger (skipped if no sells yet).
+        history = _sells_message(broker.store.recent_sells(50), config.quote_asset)
+        if history:
+            notify.send(history)
 
 
 if __name__ == "__main__":

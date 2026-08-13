@@ -9,6 +9,7 @@ Interface both backends implement:
     load()        -> {cash, realized, positions, holds}
     save(cash, realized, positions, holds)
     log_trade(**row)   row = symbol, side, kind, price, qty, usdt, pnl
+    recent_sells(limit) -> [ {ts, symbol, kind, price, qty, usdt, pnl}, … ]  newest-first
 """
 
 from __future__ import annotations
@@ -51,6 +52,14 @@ class JsonStore:
         STATE_DIR.mkdir(exist_ok=True)
         with self.trades.open("a") as f:
             f.write(json.dumps(row) + "\n")
+
+    def recent_sells(self, limit: int = 50) -> list[dict]:
+        """Last `limit` SELL rows, newest first. JSONL has no ts → date shown '—'."""
+        if not self.trades.exists():
+            return []
+        sells = [json.loads(l) for l in self.trades.read_text().splitlines()
+                 if l.strip() and json.loads(l).get("side") == "SELL"]
+        return list(reversed(sells[-limit:]))
 
 
 class PostgresStore:
@@ -100,6 +109,16 @@ class PostgresStore:
                 INSERT INTO trades (symbol, side, kind, price, qty, usdt, pnl)
                 VALUES (%(symbol)s, %(side)s, %(kind)s, %(price)s, %(qty)s,
                         %(usdt)s, %(pnl)s);""", row)
+
+    def recent_sells(self, limit: int = 50) -> list[dict]:
+        """Last `limit` SELL rows, newest first (for the Telegram history table)."""
+        cols = ("ts", "symbol", "kind", "price", "qty", "usdt", "pnl")
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                SELECT ts, symbol, kind, price, qty, usdt, pnl
+                FROM trades WHERE side='SELL'
+                ORDER BY ts DESC LIMIT %s;""", (limit,))
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
 def get_store():
