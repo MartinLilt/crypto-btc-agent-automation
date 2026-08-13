@@ -82,6 +82,53 @@ def test_buy_quote_is_plain_decimal() -> None:
         assert "e" not in s and BINANCE_NUM.match(s), f"{amount!r} -> {s!r}"
 
 
+def _stub_signed(calls):
+    """Fake bt._signed that records calls and returns plausible payloads."""
+    def fake(method, path, params):
+        calls.append((method, path))
+        if path.endswith("/account"):
+            return {"balances": [{"asset": "USDC", "free": "10.0"},
+                                 {"asset": "BTC", "free": "0.001"}]}
+        if path.endswith("/order"):
+            return {"executedQty": "0.001", "cummulativeQuoteQty": "60.0"}
+        return {}
+    return fake
+
+
+def test_balance_cache_reads_account_once() -> None:
+    """Repeated balance reads within a cycle hit /account only once."""
+    bt._bal_cache = None
+    calls = []
+    orig, bt._signed = bt._signed, _stub_signed(calls)
+    try:
+        bt.get_free_balances()
+        bt.get_free_balances()
+        bt.free_quote()
+        acct = [c for c in calls if c[1].endswith("/account")]
+        assert len(acct) == 1, f"expected 1 /account call, got {len(acct)}"
+    finally:
+        bt._signed, bt._bal_cache = orig, None
+
+
+def test_order_invalidates_balance_cache() -> None:
+    """A fill drops the cache so the next read reflects post-trade balances."""
+    bt._bal_cache = None
+    bt._lot_cache["BTCUSDC"] = "0.00001000"   # avoid a network exchangeInfo call
+    calls = []
+    orig, bt._signed = bt._signed, _stub_signed(calls)
+    try:
+        bt.get_free_balances()                # 1st /account
+        bt.market_sell("BTCUSDC", 0.001)      # fills -> invalidates cache
+        bt.get_free_balances()                # 2nd /account (fresh, post-trade)
+        acct = [c for c in calls if c[1].endswith("/account")]
+        assert len(acct) == 2, f"expected 2 /account calls after a fill, got {len(acct)}"
+        bt.get_free_balances(force=True)       # force bypasses the cache
+        acct = [c for c in calls if c[1].endswith("/account")]
+        assert len(acct) == 3, f"force=True should refetch, got {len(acct)}"
+    finally:
+        bt._signed, bt._bal_cache = orig, None
+
+
 def _run_standalone() -> int:
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

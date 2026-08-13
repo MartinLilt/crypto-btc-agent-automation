@@ -18,6 +18,10 @@ from .config import config
 
 _TIMEOUT = 10
 _lot_cache: dict[str, str] = {}
+# Per-process free-balance cache. The cron restarts the process each cycle, so
+# this only ever holds one cycle's reads. Any order mutates balances → we drop
+# it, so the next read (e.g. the next bag's _sellable) refetches fresh.
+_bal_cache: dict[str, float] | None = None
 
 
 class TradeError(RuntimeError):
@@ -45,10 +49,26 @@ def _signed(method: str, path: str, params: dict) -> dict:
     return r.json()
 
 
-def get_free_balances() -> dict[str, float]:
-    """Free (available) balance per asset. Read-only."""
-    data = _signed("GET", "/api/v3/account", {})
-    return {b["asset"]: float(b["free"]) for b in data["balances"]}
+def get_free_balances(force: bool = False) -> dict[str, float]:
+    """Free (available) balance per asset. Read-only.
+
+    Cached within a cycle: `free_quote()` (init), every `_sellable()` and the
+    end-of-cycle reconcile all call this, but the /account endpoint is weight-20.
+    Each order invalidates the cache (`_invalidate_balances`), so a read after a
+    trade still reflects the post-trade balance — only redundant reads are saved.
+    Pass force=True to bypass the cache.
+    """
+    global _bal_cache
+    if _bal_cache is None or force:
+        data = _signed("GET", "/api/v3/account", {})
+        _bal_cache = {b["asset"]: float(b["free"]) for b in data["balances"]}
+    return _bal_cache
+
+
+def _invalidate_balances() -> None:
+    """Drop the cached balances — call after any fill, since it moved them."""
+    global _bal_cache
+    _bal_cache = None
 
 
 def free_quote() -> float:
@@ -93,17 +113,21 @@ def market_buy(symbol: str, quote_usdt: float) -> dict:
     """Spend `quote_usdt` USDT on a market buy (quoteOrderQty — no qty rounding)."""
     # Plain fixed-point string, same reasoning as qty_str: never risk a float
     # stringifying to scientific notation in an API parameter (Binance -1100).
-    return _signed("POST", "/api/v3/order", {
+    resp = _signed("POST", "/api/v3/order", {
         "symbol": symbol, "side": "BUY", "type": "MARKET",
         "quoteOrderQty": f"{quote_usdt:.2f}"})
+    _invalidate_balances()          # balances moved — next read must be fresh
+    return resp
 
 
 def market_sell(symbol: str, qty: float) -> dict:
     if round_qty(symbol, qty) <= 0:
         raise TradeError(f"{symbol}: qty {qty} rounds below LOT_SIZE")
-    return _signed("POST", "/api/v3/order", {
+    resp = _signed("POST", "/api/v3/order", {
         "symbol": symbol, "side": "SELL", "type": "MARKET",
         "quantity": qty_str(symbol, qty)})
+    _invalidate_balances()          # balances moved — next read must be fresh
+    return resp
 
 
 def fill_amounts(resp: dict, fallback_price: float) -> tuple[float, float, float]:
