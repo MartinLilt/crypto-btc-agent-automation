@@ -22,10 +22,26 @@ _lot_cache: dict[str, str] = {}
 # this only ever holds one cycle's reads. Any order mutates balances → we drop
 # it, so the next read (e.g. the next bag's _sellable) refetches fresh.
 _bal_cache: dict[str, float] | None = None
+# Signing keys for the account currently being processed. None → fall back to the
+# single-account config keys (backward compatible). set_credentials() switches
+# accounts and drops the balance cache so no cross-account balance leaks.
+_creds: tuple[str, str] | None = None
 
 
 class TradeError(RuntimeError):
     pass
+
+
+def set_credentials(api_key: str, api_secret: str) -> None:
+    """Point signed calls at THIS account's keys; clears the balance cache so a
+    read never returns the previous account's balances."""
+    global _creds
+    _creds = (api_key, api_secret)
+    _invalidate_balances()
+
+
+def _key_secret() -> tuple[str, str]:
+    return _creds if _creds is not None else (config.api_key, config.api_secret)
 
 
 def _base_url() -> str:
@@ -33,14 +49,15 @@ def _base_url() -> str:
 
 
 def _signed(method: str, path: str, params: dict) -> dict:
-    if not (config.api_key and config.api_secret):
-        raise TradeError("live trading needs BINANCE_API_KEY / BINANCE_API_SECRET")
+    api_key, api_secret = _key_secret()
+    if not (api_key and api_secret):
+        raise TradeError("live trading needs a Binance API key/secret for this account")
     params = {**params, "timestamp": int(time.time() * 1000), "recvWindow": 5000}
     qs = urlencode(params)
-    sig = hmac.new(config.api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
     url = f"{_base_url()}{path}?{qs}&signature={sig}"
     try:
-        r = requests.request(method, url, headers={"X-MBX-APIKEY": config.api_key},
+        r = requests.request(method, url, headers={"X-MBX-APIKEY": api_key},
                              timeout=_TIMEOUT)
     except requests.RequestException as exc:
         raise TradeError(f"request {path} failed: {exc}") from exc

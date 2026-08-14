@@ -24,6 +24,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import binance_trade as bt  # noqa: E402
+from src.config import config as CFG, Account  # noqa: E402
+from src.store import JsonStore  # noqa: E402
+import main as runner  # noqa: E402
 
 # Binance's exact accepted numeric format for order parameters.
 BINANCE_NUM = re.compile(r"^([0-9]{1,20})(\.[0-9]{1,20})?$")
@@ -127,6 +130,74 @@ def test_order_invalidates_balance_cache() -> None:
         assert len(acct) == 3, f"force=True should refetch, got {len(acct)}"
     finally:
         bt._signed, bt._bal_cache = orig, None
+
+
+# ── multi-account + whitelist ─────────────────────────────────────────────
+
+def test_account_active_flag() -> None:
+    """An account is active only with BOTH key and secret (else it's skipped)."""
+    assert Account(1, "A", "a", "key", "sec").active
+    assert not Account(2, "B", "b", "", "").active
+    assert not Account(2, "B", "b", "key", "").active
+
+
+def test_store_slots_are_isolated() -> None:
+    """Each account slot maps to its own JSON files — no shared ledger."""
+    assert JsonStore(1).file.name == "grid_state.json"     # slot 1 keeps legacy names
+    assert JsonStore(1).trades.name == "trades.jsonl"
+    assert JsonStore(2).file.name == "grid_state_2.json"
+    assert JsonStore(2).trades.name == "trades_2.jsonl"
+
+
+def test_credentials_switch_clears_cache() -> None:
+    """Switching accounts repoints signing keys AND drops the balance cache."""
+    bt._bal_cache = {"USDC": 1.0}
+    try:
+        bt.set_credentials("KEY2", "SEC2")
+        assert bt._key_secret() == ("KEY2", "SEC2")
+        assert bt._bal_cache is None, "cache must clear so balances don't leak across accounts"
+    finally:
+        bt._creds = None
+        bt._bal_cache = None
+
+
+class _FakeSubs:
+    def __init__(self) -> None:
+        self.o = 0
+        self.added: list[tuple[int, str]] = []
+    def offset(self) -> int: return self.o
+    def set_offset(self, o: int) -> None: self.o = o
+    def add(self, chat_id: int, username: str) -> None: self.added.append((chat_id, username))
+    def all(self): return list(self.added)
+
+
+def test_whitelist_gates_subscription() -> None:
+    """/start enrollment: only whitelisted @usernames are registered; a stranger
+    is refused (and never becomes a report recipient). Offset advances."""
+    fake = _FakeSubs()
+    sent: list[tuple] = []
+    updates = [
+        {"update_id": 10, "message": {"chat": {"id": 111}, "from": {"username": "Limi_AMM"}}},
+        {"update_id": 11, "message": {"chat": {"id": 222}, "from": {"username": "stranger"}}},
+    ]
+    orig = (runner.get_subscribers, runner.notify.get_updates, runner.notify.send,
+            CFG.telegram_whitelist, CFG.telegram_bot_token)
+    runner.get_subscribers = lambda: fake
+    runner.notify.get_updates = lambda offset: updates
+    runner.notify.send = lambda text, chat_id=None: sent.append((chat_id, text)) or True
+    object.__setattr__(CFG, "telegram_whitelist", ("limi_amm", "aleksandli"))
+    object.__setattr__(CFG, "telegram_bot_token", "TESTTOKEN")
+    try:
+        runner._process_subscriptions()
+        assert (111, "limi_amm") in fake.added, "whitelisted user must be registered"
+        assert all(c != 222 for c, _ in fake.added), "stranger must NOT be registered"
+        assert any(cid == 222 for cid, _ in sent), "stranger must get a refusal reply"
+        assert fake.o == 12, "offset must advance past the last update_id"
+    finally:
+        (runner.get_subscribers, runner.notify.get_updates, runner.notify.send,
+         wl, tok) = (*orig,)
+        object.__setattr__(CFG, "telegram_whitelist", wl)
+        object.__setattr__(CFG, "telegram_bot_token", tok)
 
 
 def _run_standalone() -> int:

@@ -18,6 +18,7 @@ from dataclasses import replace
 from src.grid import effective_unit, is_uptrend, params_from_config, plan_actions
 from src.grid_broker import get_grid_broker
 from src import notify
+from src.subscribers import get_subscribers
 from src.regime import Regime, detect_regime, resample, tf_factor
 from src.universe import get_universe
 
@@ -120,10 +121,14 @@ def _sells_message(sells: list[dict], quote: str) -> str | None:
             f"<pre>{table}</pre>")
 
 
-def main() -> None:
+def run_account(account) -> tuple[str | None, str | None]:
+    """One trading cycle for ONE account. Trades its Binance account, prints the
+    console report, and RETURNS (main_message, history_message) for Telegram —
+    the caller fans them out to all subscribers. Returns (None, None) on no data."""
     p = params_from_config()
     universe = get_universe()
-    print(f"=== Grid-stream | mode={config.trading_mode.upper()} | {config.interval} "
+    who = f"{account.name} (@{account.tg_username})" if account.tg_username else account.name
+    print(f"=== Grid-stream | {who} | mode={config.trading_mode.upper()} | {config.interval} "
           f"| TP {p.tp_pct}% · step {p.step_pct}% · unit {p.unit_usdt} · "
           f"max {p.max_bags} bags · SMA{p.sma_win} ===")
     if config.trading_mode == "live":
@@ -131,8 +136,8 @@ def main() -> None:
     else:
         print()
 
-    broker = get_grid_broker()
-    print(f"storage           : {broker.backend}")
+    broker = get_grid_broker(account)
+    print(f"storage           : {broker.backend} [slot {account.slot}]")
 
     # Bag size for this cycle. When GRID_UNIT_PCT>0 it tracks the live balance,
     # so a deposit auto-scales the bags (with a min-notional floor).
@@ -271,42 +276,97 @@ def main() -> None:
     pos_table = _pos_table(rows)
     print("positions:\n" + pos_table)
 
-    # ── Telegram results output ──────────────────────────────────────────
-    if notify.enabled():
-        equity_pct = (equity / start - 1) * 100
-        feast_pct = (feast / start - 1) * 100
-        invested = equity - broker.cash          # value sitting inside open positions
-        # plain-language verdict on the banked profit — the bottom-line number
-        verdict = ("✅ в плюсе" if broker.realized > 0
-                   else "❌ пока в минусе" if broker.realized < 0 else "· по нулям")
-        pos_block = f"<pre>{pos_table}</pre>" if rows else f"<i>{pos_table}</i>"
-        lines = [
-            f"<b>🌊 Grid-stream</b> · {config.trading_mode.upper()} · {config.interval}",
-            "",
-            f"💰 Всего на счету: <b>{equity:.0f}</b> {config.quote_asset} ({equity_pct:+.1f}%)",
-            f"     свободно {broker.cash:.0f} · в закупках {invested:.0f}",
-            f"💵 Заработано всего: <b>{broker.realized:+.2f}</b> {config.quote_asset} — {verdict}",
-            f"🎯 Если все закупки отработают: {feast:.0f} ({feast_pct:+.1f}%)",
-            *([f"<b>{flow_line}</b>"] if flow_line else []),
-            "",
-            f"🛒 Открытых закупок: {broker.total_bags} · 💼 Холдов: {n_holds}",
-            *_trend_summary(regimes),
-            "<b>📦 Позиции (чего ждут):</b>",
-            pos_block,
-            "",
-            _tax_line(broker.realized, config.quote_asset),
-            "",
-            "<b>⚡️ Действия за цикл:</b>",
-            *(actions or ["<i>— без сделок в этом цикле —</i>"]),
-        ]
-        if errors:
-            lines += ["", "<b>⚠️ Ошибки за цикл:</b>", *errors]
-        notify.send("\n".join(lines))
+    # ── build Telegram messages (caller sends them to all subscribers) ────
+    equity_pct = (equity / start - 1) * 100
+    feast_pct = (feast / start - 1) * 100
+    invested = equity - broker.cash          # value sitting inside open positions
+    # plain-language verdict on the banked profit — the bottom-line number
+    verdict = ("✅ в плюсе" if broker.realized > 0
+               else "❌ пока в минусе" if broker.realized < 0 else "· по нулям")
+    pos_block = f"<pre>{pos_table}</pre>" if rows else f"<i>{pos_table}</i>"
+    header = f"<b>🌊 {account.name}</b>"
+    if account.tg_username:
+        header += f" · @{account.tg_username}"
+    lines = [
+        f"{header} · {config.trading_mode.upper()} · {config.interval}",
+        "",
+        f"💰 Всего на счету: <b>{equity:.0f}</b> {config.quote_asset} ({equity_pct:+.1f}%)",
+        f"     свободно {broker.cash:.0f} · в закупках {invested:.0f}",
+        f"💵 Заработано всего: <b>{broker.realized:+.2f}</b> {config.quote_asset} — {verdict}",
+        f"🎯 Если все закупки отработают: {feast:.0f} ({feast_pct:+.1f}%)",
+        *([f"<b>{flow_line}</b>"] if flow_line else []),
+        "",
+        f"🛒 Открытых закупок: {broker.total_bags} · 💼 Холдов: {n_holds}",
+        *_trend_summary(regimes),
+        "<b>📦 Позиции (чего ждут):</b>",
+        pos_block,
+        "",
+        _tax_line(broker.realized, config.quote_asset),
+        "",
+        "<b>⚡️ Действия за цикл:</b>",
+        *(actions or ["<i>— без сделок в этом цикле —</i>"]),
+    ]
+    if errors:
+        lines += ["", "<b>⚠️ Ошибки за цикл:</b>", *errors]
+    history = _sells_message(broker.store.recent_sells(50), config.quote_asset)
+    return "\n".join(lines), history
 
-        # Second message: the recent-sells win/loss ledger (skipped if no sells yet).
-        history = _sells_message(broker.store.recent_sells(50), config.quote_asset)
-        if history:
-            notify.send(history)
+
+def _process_subscriptions() -> None:
+    """Poll Telegram once for /start messages; register whitelisted users as
+    subscribers, refuse everyone else. Best-effort — never blocks a cycle."""
+    if not config.telegram_bot_token or not config.telegram_whitelist:
+        return
+    subs = get_subscribers()
+    offset = subs.offset()
+    new_offset = offset
+    for u in notify.get_updates(offset):
+        new_offset = max(new_offset, u.get("update_id", 0) + 1)
+        msg = u.get("message")
+        if not msg:
+            continue
+        chat_id = (msg.get("chat") or {}).get("id")
+        uname = ((msg.get("from") or {}).get("username") or "").lower()
+        if not chat_id:
+            continue
+        if uname in config.telegram_whitelist:
+            subs.add(chat_id, uname)
+            notify.send("✅ Доступ подтверждён — отчёты Grid-stream будут приходить "
+                        "сюда каждые 4 часа.", chat_id)
+        else:
+            notify.send("⛔ Доступ только для участников бота из белого списка.", chat_id)
+    if new_offset != offset:
+        subs.set_offset(new_offset)
+
+
+def _recipients() -> list:
+    """All chat_ids to push reports to: registered subscribers + the bootstrap
+    (owner) chat, de-duplicated."""
+    ids = {str(cid) for cid, _ in get_subscribers().all()}
+    if config.telegram_chat_id:
+        ids.add(str(config.telegram_chat_id))
+    return sorted(ids)
+
+
+def main() -> None:
+    # Whitelist enrollment first, so a just-approved user gets this cycle's report.
+    _process_subscriptions()
+
+    live = config.trading_mode == "live"
+    to_run = [a for a in config.accounts if (a.active if live else True)]
+    skipped = [a for a in config.accounts if live and not a.active]
+    for a in skipped:
+        print(f"— skipping {a.name} (@{a.tg_username}): no API keys yet —")
+
+    targets = _recipients()
+    for account in to_run:
+        main_msg, history = run_account(account)
+        for chat in targets:
+            if main_msg:
+                notify.send(main_msg, chat)
+            if history:
+                notify.send(history, chat)
+        print()  # blank line between accounts in the console log
 
 
 if __name__ == "__main__":

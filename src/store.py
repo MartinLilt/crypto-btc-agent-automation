@@ -27,9 +27,13 @@ def _default() -> dict:
 class JsonStore:
     backend = "json"
 
-    def __init__(self) -> None:
-        self.file = STATE_DIR / "grid_state.json"
-        self.trades = STATE_DIR / "trades.jsonl"
+    def __init__(self, account_id: int = 1) -> None:
+        # slot 1 keeps the legacy filenames (existing local state); slot 2+ get
+        # their own files so accounts never share a ledger.
+        sfx = "" if account_id == 1 else f"_{account_id}"
+        self.account_id = account_id
+        self.file = STATE_DIR / f"grid_state{sfx}.json"
+        self.trades = STATE_DIR / f"trades{sfx}.jsonl"
 
     def load(self) -> dict:
         if self.file.exists():
@@ -65,8 +69,9 @@ class JsonStore:
 class PostgresStore:
     backend = "postgres"
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, account_id: int = 1) -> None:
         import psycopg
+        self.account_id = account_id
         self.conn = psycopg.connect(dsn, autocommit=True)
         with self.conn.cursor() as cur:
             cur.execute("""
@@ -81,10 +86,16 @@ class PostgresStore:
                     symbol TEXT, side TEXT, kind TEXT,
                     price DOUBLE PRECISION, qty DOUBLE PRECISION,
                     usdt DOUBLE PRECISION, pnl DOUBLE PRECISION);""")
+            # Multi-account migration (idempotent): tag trades by account; the
+            # pre-existing single-user rows belong to slot 1. portfolio already
+            # keys by id, which we reuse as the account slot — no PK surgery.
+            cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS account_id INT;")
+            cur.execute("UPDATE trades SET account_id = 1 WHERE account_id IS NULL;")
 
     def load(self) -> dict:
         with self.conn.cursor() as cur:
-            cur.execute("SELECT cash, realized, positions, holds FROM portfolio WHERE id=1;")
+            cur.execute("SELECT cash, realized, positions, holds FROM portfolio WHERE id=%s;",
+                        (self.account_id,))
             r = cur.fetchone()
         if not r:
             return _default()
@@ -96,35 +107,36 @@ class PostgresStore:
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO portfolio (id, cash, realized, positions, holds, updated_at)
-                VALUES (1, %s, %s, %s, %s, now())
+                VALUES (%s, %s, %s, %s, %s, now())
                 ON CONFLICT (id) DO UPDATE SET
                     cash=EXCLUDED.cash, realized=EXCLUDED.realized,
                     positions=EXCLUDED.positions, holds=EXCLUDED.holds,
                     updated_at=now();""",
-                (cash, realized, Json(positions), Json(holds)))
+                (self.account_id, cash, realized, Json(positions), Json(holds)))
 
     def log_trade(self, **row) -> None:
         with self.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO trades (symbol, side, kind, price, qty, usdt, pnl)
-                VALUES (%(symbol)s, %(side)s, %(kind)s, %(price)s, %(qty)s,
-                        %(usdt)s, %(pnl)s);""", row)
+                INSERT INTO trades (account_id, symbol, side, kind, price, qty, usdt, pnl)
+                VALUES (%(account_id)s, %(symbol)s, %(side)s, %(kind)s, %(price)s,
+                        %(qty)s, %(usdt)s, %(pnl)s);""",
+                {**row, "account_id": self.account_id})
 
     def recent_sells(self, limit: int = 50) -> list[dict]:
-        """Last `limit` SELL rows, newest first (for the Telegram history table)."""
+        """Last `limit` SELL rows for THIS account, newest first."""
         cols = ("ts", "symbol", "kind", "price", "qty", "usdt", "pnl")
         with self.conn.cursor() as cur:
             cur.execute("""
                 SELECT ts, symbol, kind, price, qty, usdt, pnl
-                FROM trades WHERE side='SELL'
-                ORDER BY ts DESC LIMIT %s;""", (limit,))
+                FROM trades WHERE side='SELL' AND account_id=%s
+                ORDER BY ts DESC LIMIT %s;""", (self.account_id, limit))
             return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-def get_store():
+def get_store(account_id: int = 1):
     if config.database_url:
         try:
-            return PostgresStore(config.database_url)
+            return PostgresStore(config.database_url, account_id)
         except Exception as exc:
             print(f"[store] Postgres unavailable ({str(exc)[:70]}) — JSON fallback")
-    return JsonStore()
+    return JsonStore(account_id)

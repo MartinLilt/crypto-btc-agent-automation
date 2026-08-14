@@ -27,8 +27,9 @@ class BrokerError(RuntimeError):
 class GridBroker:
     mode = "paper"
 
-    def __init__(self) -> None:
-        self.store = get_store()
+    def __init__(self, account=None) -> None:
+        self.account = account
+        self.store = get_store(account.slot if account else 1)
         s = self.store.load()
         self.cash: float = s["cash"]
         self.realized: float = s["realized"]
@@ -136,12 +137,14 @@ class LiveGridBroker(GridBroker):
 
     mode = "live"
 
-    def __init__(self) -> None:
+    def __init__(self, account=None) -> None:
         if config.trading_mode != "live":
             raise BrokerError("LiveGridBroker requires TRADING_MODE=live")
-        super().__init__()                 # logical bags/holds/realized from store
-        stored_cash = self.cash            # cash we persisted at the end of last cycle
         from . import binance_trade as bt
+        if account is not None:            # point signed calls at THIS account's keys
+            bt.set_credentials(account.api_key, account.api_secret)
+        super().__init__(account)          # logical bags/holds/realized from store
+        stored_cash = self.cash            # cash we persisted at the end of last cycle
         self._bt = bt
         self.cash = bt.free_quote()        # real quote (USDC) balance is the truth
         # External flow since last save = deposits/withdrawals (nothing but our own
@@ -245,8 +248,11 @@ class LiveGridBroker(GridBroker):
         return warnings
 
 
-def get_grid_broker() -> GridBroker:
-    """Live broker only when explicitly in live mode WITH keys; else paper."""
-    if config.trading_mode == "live" and config.api_key and config.api_secret:
-        return LiveGridBroker()
-    return GridBroker()
+def get_grid_broker(account=None) -> GridBroker:
+    """Live broker only when explicitly in live mode WITH this account's keys;
+    else paper. `account` namespaces state and selects signing keys."""
+    if account is None:
+        account = config.accounts[0]
+    if config.trading_mode == "live" and account.api_key and account.api_secret:
+        return LiveGridBroker(account)
+    return GridBroker(account)

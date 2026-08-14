@@ -28,6 +28,46 @@ def _bool(name: str, default: bool = False) -> bool:
 
 
 @dataclass(frozen=True)
+class Account:
+    """One trader on the shared bot. `slot` namespaces state (portfolio/trades)
+    so accounts never touch each other's bags. Inactive (no keys) → skipped."""
+    slot: int                 # 1 = primary (legacy state), 2 = second, …
+    name: str                 # display label in the report header
+    tg_username: str          # Telegram handle (no leading @) for the whitelist
+    api_key: str
+    api_secret: str
+
+    @property
+    def active(self) -> bool:
+        return bool(self.api_key and self.api_secret)
+
+
+def _build_accounts() -> tuple[Account, ...]:
+    """Primary account keeps the legacy BINANCE_API_KEY/SECRET (slot 1, existing
+    live state). A second account is declared once ACCOUNT_2_TG or its keys
+    appear; it stays inactive (and is skipped) until BINANCE_API_KEY_2/SECRET_2
+    are set."""
+    accts = [Account(
+        slot=1,
+        name=os.getenv("ACCOUNT_1_NAME", "Grid-stream").strip(),
+        tg_username=os.getenv("ACCOUNT_1_TG", "").strip().lstrip("@"),
+        api_key=os.getenv("BINANCE_API_KEY", "").strip(),
+        api_secret=os.getenv("BINANCE_API_SECRET", "").strip(),
+    )]
+    tg2 = os.getenv("ACCOUNT_2_TG", "").strip().lstrip("@")
+    key2 = os.getenv("BINANCE_API_KEY_2", "").strip()
+    if tg2 or key2:
+        accts.append(Account(
+            slot=2,
+            name=os.getenv("ACCOUNT_2_NAME", "Второй").strip(),
+            tg_username=tg2,
+            api_key=key2,
+            api_secret=os.getenv("BINANCE_API_SECRET_2", "").strip(),
+        ))
+    return tuple(accts)
+
+
+@dataclass(frozen=True)
 class Config:
     api_key: str
     api_secret: str
@@ -79,8 +119,10 @@ class Config:
     regime_adaptive: bool      # switch grid behaviour by market regime
     bull_hold_pct: float       # capital fraction to buy-&-hold per coin in BULL
     telegram_bot_token: str    # Telegram bot token (results output); empty = off
-    telegram_chat_id: str      # chat to send results to
+    telegram_chat_id: str      # legacy/bootstrap chat (owner); always a recipient
     database_url: str          # Postgres DSN; empty = JSON-file fallback
+    accounts: tuple[Account, ...]      # traders on the shared bot (slot-namespaced)
+    telegram_whitelist: tuple[str, ...]  # @usernames allowed to /start-subscribe
 
 
 config = Config(
@@ -143,4 +185,9 @@ config = Config(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
     telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
     database_url=os.getenv("DATABASE_URL", "").strip(),
+    accounts=_build_accounts(),
+    telegram_whitelist=tuple(
+        u.strip().lstrip("@").lower()
+        for u in os.getenv("TELEGRAM_WHITELIST", "").split(",") if u.strip()
+    ),
 )
