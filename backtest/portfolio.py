@@ -102,7 +102,8 @@ def regime_series(closes, ma_win=RG_MA, look=RG_LOOK, flat=RG_FLAT,
 
 def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
              hold_pct=HOLD_PCT, max_bags=None, start=TOTAL, lo=0, hi=None,
-             reg=None):
+             reg=None, hold_trail=0.0, hold_tp=0.0, hold_tp_frac=0.5,
+             max_deploy=1.0):
     max_bags = P.max_bags if max_bags is None else max_bags
     coins = [c for c in BASKET if c in data]
     closes = {c: [k.close for k in data[c]] for c in coins}
@@ -113,6 +114,9 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
     cash = start
     bags = {c: [] for c in coins}
     holds = {c: None for c in coins}
+    # after a trail/TP exit the coin is locked out until it LEAVES bull, else it
+    # would just re-buy on the next bar and the trail becomes a churn machine
+    locked = {c: False for c in coins}
     r_grid = r_hold = 0.0
     n_grid = n_hold = 0
     hold_bars = []
@@ -133,13 +137,32 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
             regime = reg[c][i] if adaptive else NEUTRAL
 
             if use_hold and regime == BULL:
-                if holds[c] is None:
+                h = holds[c]
+                if h is not None:
+                    h["peak"] = max(h["peak"], price)
+                    # partial take-profit: bank `hold_tp_frac` of the ride once
+                    if hold_tp and not h["banked"] and price >= h["entry"] * (1 + hold_tp / 100):
+                        q = h["qty"] * hold_tp_frac
+                        proceeds = q * price * (1 - FEE)
+                        cash += proceeds; r_hold += proceeds - h["cost"] * hold_tp_frac
+                        h["qty"] -= q; h["cost"] *= (1 - hold_tp_frac); h["banked"] = True
+                        n_hold += 1
+                    # trailing stop: leave the ride when it gives back `hold_trail`%
+                    if hold_trail and price <= h["peak"] * (1 - hold_trail / 100):
+                        proceeds = h["qty"] * price * (1 - FEE)
+                        cash += proceeds; r_hold += proceeds - h["cost"]
+                        n_hold += 1; hold_bars.append(i - h["i"])
+                        holds[c] = None; locked[c] = True
+                elif not locked[c]:
                     amt = min(hold_pct * capital_base, cash)
                     if amt >= unit:
                         qty = (amt - amt * FEE) / price
-                        holds[c] = {"qty": qty, "cost": amt, "i": i}
+                        holds[c] = {"qty": qty, "cost": amt, "i": i,
+                                    "entry": price, "peak": price, "banked": False}
                         cash -= amt
                 continue                      # BULL: grid frozen
+
+            locked[c] = False                 # left BULL — the ride can be re-taken
 
             if holds[c] is not None:          # left BULL -> liquidate the ride
                 h = holds[c]
@@ -163,7 +186,9 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
             up = sma100[c][i] is not None and price > sma100[c][i]
             lowest = min((b["entry"] for b in bags[c]), default=None)
             want = lowest is None or price <= lowest * (1 - P.step_pct / 100)
-            if up and want and cash >= unit and len(bags[c]) < max_bags:
+            deployed_grid = sum(b["cost"] for cc in coins for b in bags[cc])
+            room = deployed_grid + unit <= max_deploy * capital_base
+            if up and want and cash >= unit and len(bags[c]) < max_bags and room:
                 qty = (unit - unit * FEE) / price
                 bags[c].append({"entry": price, "qty": qty, "cost": unit, "i": i})
                 cash -= unit
