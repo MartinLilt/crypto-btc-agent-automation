@@ -185,6 +185,73 @@ def test_min_round_trip_unit_covers_two_lot_steps() -> None:
     assert bt.min_round_trip_unit("BNBUSDC", 715.0) < 6.5       # step ~$0.72
 
 
+# ── partial take-profit on a BULL hold ────────────────────────────────────
+
+class _FakeStore:
+    backend = "fake"
+    def __init__(self): self.trades = []
+    def log_trade(self, **kw): self.trades.append(kw)
+
+
+def _paper_broker(cash=100.0):
+    """A GridBroker with no store I/O (bypasses __init__ on purpose)."""
+    from src.grid_broker import GridBroker
+    b = object.__new__(GridBroker)
+    b.account = None; b.store = _FakeStore()
+    b.cash = cash; b.realized = 0.0; b.positions = {}; b.holds = {}
+    b.external_flow = 0.0; b.capital_base = cash
+    return b
+
+
+def test_partial_hold_tp_banks_half_and_leaves_the_rest_riding() -> None:
+    """Selling half a hold at +40% halves qty AND cost, banks the pnl of the
+    sold slice only, and leaves the remainder invested."""
+    b = _paper_broker()
+    b.buy_hold("ETHUSDC", 100.0, 20.0)
+    h = b.holds["ETHUSDC"]
+    qty0, cash0 = h["qty"], b.cash
+    assert h["banked"] is False
+
+    pnl = b.sell_hold_part("ETHUSDC", 140.0, 0.5)          # +40% on the ride
+    fee = CFG.fee_rate
+    expected = qty0 * 0.5 * 140.0 * (1 - fee) - 20.0 * 0.5
+    assert abs(pnl - expected) < 1e-9, (pnl, expected)
+    assert abs(h["qty"] - qty0 * 0.5) < 1e-12, "half must stay invested"
+    assert abs(h["cost"] - 10.0) < 1e-12, "cost basis must shrink with the qty"
+    assert b.cash > cash0 and abs(b.realized - pnl) < 1e-9
+    assert h["banked"] is True, "must not fire twice on the same hold"
+    assert b.store.trades[-1]["kind"] == "hold-part"
+
+
+def test_partial_hold_tp_pnl_matches_a_full_exit_of_the_same_slice() -> None:
+    """Banking half then exiting the rest == exiting it all at one price."""
+    a, b = _paper_broker(), _paper_broker()
+    for br in (a, b):
+        br.buy_hold("ETHUSDC", 100.0, 20.0)
+    a.sell_hold_part("ETHUSDC", 140.0, 0.5); a.sell_hold("ETHUSDC", 140.0)
+    b.sell_hold("ETHUSDC", 140.0)
+    assert abs(a.realized - b.realized) < 1e-9, (a.realized, b.realized)
+    assert abs(a.cash - b.cash) < 1e-9
+
+
+def test_hold_split_refused_when_a_half_would_be_dust() -> None:
+    """A hold too small to cut in two rides whole — splitting it would leave an
+    unsellable remainder (the -1013 NOTIONAL trap)."""
+    from src.grid_broker import LiveGridBroker
+
+    class _BT:
+        @staticmethod
+        def min_notional(symbol): return 5.0
+
+    b = object.__new__(LiveGridBroker)
+    b.holds = {"ETHUSDC": {"qty": 0.004, "cost": 9.0, "entry": 2000.0}}
+    b._bt = _BT()
+    assert not b.hold_splittable("ETHUSDC", 2000.0, 0.5)    # halves are $4 < $5
+    b.holds["ETHUSDC"]["qty"] = 0.010                       # $20 -> halves $10
+    assert b.hold_splittable("ETHUSDC", 2000.0, 0.5)
+    assert not b.hold_splittable("BTCUSDC", 2000.0, 0.5)    # no hold at all
+
+
 # ── multi-account + whitelist ─────────────────────────────────────────────
 
 def test_account_active_flag() -> None:

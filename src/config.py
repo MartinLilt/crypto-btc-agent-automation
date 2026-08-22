@@ -118,6 +118,9 @@ class Config:
     grid_sma: int              # uptrend filter window (no new bags below it)
     regime_adaptive: bool      # switch grid behaviour by market regime
     bull_hold_pct: float       # capital fraction to buy-&-hold per coin in BULL
+    hold_tp_pct: float         # bank part of a BULL hold once it is this % up
+                               # (0 = off — ride the whole position to the exit)
+    hold_tp_frac: float        # fraction of the hold sold at that level
     telegram_bot_token: str    # Telegram bot token (results output); empty = off
     telegram_chat_id: str      # legacy/bootstrap chat (owner); always a recipient
     database_url: str          # Postgres DSN; empty = JSON-file fallback
@@ -182,6 +185,8 @@ config = Config(
     grid_sma=int(os.getenv("GRID_SMA", "100")),
     regime_adaptive=_bool("REGIME_ADAPTIVE", True),
     bull_hold_pct=float(os.getenv("BULL_HOLD_PCT", "0.25")),
+    hold_tp_pct=float(os.getenv("HOLD_TP_PCT", "40")),
+    hold_tp_frac=float(os.getenv("HOLD_TP_FRAC", "0.5")),
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
     telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
     database_url=os.getenv("DATABASE_URL", "").strip(),

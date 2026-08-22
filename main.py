@@ -195,6 +195,19 @@ def run_account(account) -> tuple[str | None, str | None]:
                         actions.append(f"🟢 {c}: BULL — bought hold ${amt:.0f} to ride")
                 else:
                     note = " HOLDING"
+                    # Partial take-profit: once the ride is deep in profit, bank
+                    # part of it so a sharp retrace can't round-trip the whole
+                    # position. Fires once per hold (`banked`), and only when
+                    # BOTH halves still clear the exchange's NOTIONAL floor.
+                    h = broker.holds[coin]
+                    if (config.hold_tp_pct > 0 and not h.get("banked")
+                            and price >= h["entry"] * (1 + config.hold_tp_pct / 100)
+                            and broker.hold_splittable(coin, price, config.hold_tp_frac)):
+                        pnl = broker.sell_hold_part(coin, price, config.hold_tp_frac)
+                        note = f" HOLD-TP {pnl:+.2f}"
+                        actions.append(
+                            f"💵 {c}: +{config.hold_tp_pct:.0f}% — забрал "
+                            f"{config.hold_tp_frac * 100:.0f}% холда, pnl {pnl:+.2f}")
             else:
                 # left BULL → liquidate the ride (take the bull gains)
                 if broker.has_hold(coin):
