@@ -104,10 +104,12 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
              hold_pct=HOLD_PCT, max_bags=None, start=TOTAL, lo=0, hi=None,
              reg=None, hold_trail=0.0, hold_tp=0.0, hold_tp_frac=0.5,
              max_deploy=1.0, exec_mode="close", tp_pct=None, decide_every=1, phase=0,
-             block_hold=None, block_bag=None):
+             block_hold=None, block_bag=None, basket=None):
     max_bags = P.max_bags if max_bags is None else max_bags
     tp_pct = P.tp_pct if tp_pct is None else tp_pct
-    coins = [c for c in BASKET if c in data]
+    # basket order matters: hold allocations are first-come, so whoever
+    # flips BULL first takes its slice of the shared cash
+    coins = [c for c in (basket or BASKET) if c in data]
     closes = {c: [k.close for k in data[c]] for c in coins}
     # "close": decide on the 4h close, as the live cron does — a take-profit
     #          touched INSIDE the bar is only noticed hours later, at whatever
@@ -133,6 +135,8 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
     frozen = 0.0
     peak_eq = start; mdd = 0.0; bars = 0
     peak_bags = 0
+    dep_hist: list[float] = []
+    bull_now: list[int] = []
 
     n = n if hi is None else min(n, hi)
     for i in range(max(WARM, lo), n):
@@ -230,6 +234,11 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
         frozen += sum(b["cost"] for c in coins for b in bags[c]
                       if closes[c][i] < b["entry"])
         peak_bags = max(peak_bags, sum(len(bags[c]) for c in coins))
+        # how much of the book is actually AT WORK this bar, and how many coins
+        # are in a BULL ride — the two numbers that explain the idle cash
+        if equity > 0:
+            dep_hist.append((g_val + h_val) / equity)
+        bull_now.append(sum(1 for c in coins if holds[c]))
         bars += 1
 
     last = {c: closes[c][n - 1] for c in coins}
@@ -246,7 +255,7 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                 frozen=frozen / bars / start * 100, n_grid=n_grid, n_hold=n_hold,
                 hold_days=(sum(hold_bars) / len(hold_bars) / 6) if hold_bars else 0,
                 open_bags=sum(len(bags[c]) for c in coins), peak_bags=peak_bags,
-                years=years)
+                years=years, dep_hist=dep_hist, bull_now=bull_now)
 
 
 # ── attribution report ────────────────────────────────────────────────────
