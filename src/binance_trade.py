@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from decimal import Decimal
 from urllib.parse import urlencode
 
 import requests
@@ -18,6 +19,10 @@ from .config import config
 
 _TIMEOUT = 10
 _lot_cache: dict[str, str] = {}
+# NOTIONAL filter (minimum order value in quote currency) per symbol. Binance
+# rejects anything below it with -1013 "Filter failure: NOTIONAL".
+_notional_cache: dict[str, float] = {}
+_DEFAULT_MIN_NOTIONAL = 5.0     # every USDC/USDT spot pair we trade uses $5
 # Per-process free-balance cache. The cron restarts the process each cycle, so
 # this only ever holds one cycle's reads. Any order mutates balances → we drop
 # it, so the next read (e.g. the next bag's _sellable) refetches fresh.
@@ -93,16 +98,46 @@ def free_quote() -> float:
     return get_free_balances().get(config.quote_asset, 0.0)
 
 
+def _load_filters(symbol: str) -> None:
+    """Fetch and cache this symbol's LOT_SIZE step and NOTIONAL minimum."""
+    info = requests.get(f"{_base_url()}/api/v3/exchangeInfo",
+                        params={"symbol": symbol}, timeout=_TIMEOUT).json()
+    step, floor = "0.00000001", _DEFAULT_MIN_NOTIONAL
+    for f in info["symbols"][0]["filters"]:
+        if f["filterType"] == "LOT_SIZE":
+            step = f["stepSize"]
+        elif f["filterType"] in ("NOTIONAL", "MIN_NOTIONAL"):
+            floor = float(f.get("minNotional", floor))
+    _lot_cache[symbol] = step
+    _notional_cache[symbol] = floor
+
+
 def _lot_step(symbol: str) -> str:
     if symbol not in _lot_cache:
-        info = requests.get(f"{_base_url()}/api/v3/exchangeInfo",
-                            params={"symbol": symbol}, timeout=_TIMEOUT).json()
-        step = "0.00000001"
-        for f in info["symbols"][0]["filters"]:
-            if f["filterType"] == "LOT_SIZE":
-                step = f["stepSize"]
-        _lot_cache[symbol] = step
+        _load_filters(symbol)
     return _lot_cache[symbol]
+
+
+def min_notional(symbol: str) -> float:
+    """Smallest order value the exchange accepts for this symbol (quote ccy)."""
+    if symbol not in _notional_cache:
+        try:
+            _load_filters(symbol)
+        except Exception:                      # network/parse — assume the norm
+            return _DEFAULT_MIN_NOTIONAL
+    return _notional_cache.get(symbol, _DEFAULT_MIN_NOTIONAL)
+
+
+def min_round_trip_unit(symbol: str, price: float) -> float:
+    """Smallest bag that can still be SOLD after the exchange's rounding.
+
+    A quoteOrderQty buy truncates the base qty DOWN to LOT_SIZE, and the sell
+    truncates again — so up to two steps of value evaporate on a round-trip.
+    What is left must still clear NOTIONAL, plus a little slack for the fee.
+    On BTC the step is ~$0.78 at 78k, which is why a $6 bag bought $5.40 of BTC
+    and then could not be sold ($4.71 < $5, -1013)."""
+    step = float(_lot_step(symbol))
+    return (min_notional(symbol) + 2 * step * price) * (1 + config.fee_rate) + 0.01
 
 
 def _lot_places(symbol: str) -> int:
@@ -112,9 +147,14 @@ def _lot_places(symbol: str) -> int:
 
 
 def round_qty(symbol: str, qty: float) -> float:
-    """Round DOWN to the symbol's LOT_SIZE step so the order is accepted."""
-    factor = 10 ** _lot_places(symbol)
-    return int(qty * factor) / factor
+    """Round DOWN to the symbol's LOT_SIZE step so the order is accepted.
+
+    Decimal, not float: `int(0.00007 * 100000)` is 6, because 0.00007 has no
+    exact binary form — a qty sitting exactly ON the step lost a WHOLE step
+    (on BTC that is ~$0.78, enough to drop a $5.48 TP-sell under the $5
+    NOTIONAL floor and get it rejected)."""
+    step = Decimal(_lot_step(symbol))
+    return float((Decimal(str(qty)) // step) * step)
 
 
 def qty_str(symbol: str, qty: float) -> str:
@@ -137,9 +177,21 @@ def market_buy(symbol: str, quote_usdt: float) -> dict:
     return resp
 
 
-def market_sell(symbol: str, qty: float) -> dict:
-    if round_qty(symbol, qty) <= 0:
+def market_sell(symbol: str, qty: float, price: float | None = None) -> dict:
+    """Market-sell `qty` base units. `price` (if known) enables a NOTIONAL
+    pre-check, so a too-small bag fails with a clear message here instead of
+    costing an API round-trip and a -1013 rejection every cycle."""
+    lot = round_qty(symbol, qty)
+    if lot <= 0:
         raise TradeError(f"{symbol}: qty {qty} rounds below LOT_SIZE")
+    if price:
+        floor = min_notional(symbol)
+        if lot * price < floor:
+            raise TradeError(
+                f"{symbol}: sellable {lot:g} @ {price:g} = "
+                f"{lot * price:.2f} {config.quote_asset} < minNotional "
+                f"{floor:.2f} — bag too small to sell (needs price "
+                f">= {floor / lot:,.0f} or a top-up)")
     resp = _signed("POST", "/api/v3/order", {
         "symbol": symbol, "side": "SELL", "type": "MARKET",
         "quantity": qty_str(symbol, qty)})

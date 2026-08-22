@@ -174,12 +174,22 @@ def run_account(account) -> tuple[str | None, str | None]:
         c = coin.replace(config.quote_asset, "")
         note = ""
 
+        # Per-coin bag floor. LOT_SIZE truncation eats up to a step on the buy
+        # AND on the sell, so a bag sized just above NOTIONAL becomes unsellable
+        # (BTC, 2026-08-22: $6 bag -> bought $5.40 -> sell $4.71 -> -1013).
+        pc = p
+        floor = broker.min_unit(coin, price)
+        if floor > p.unit_usdt:
+            pc = replace(p, unit_usdt=floor)
+            print(f"{coin:>9}  unit raised {p.unit_usdt:.2f} → {floor:.2f} "
+                  f"(exchange filters)")
+
         try:
             if config.regime_adaptive and regime is Regime.BULL:
                 # BULL: ride a buy-&-hold allocation instead of gridding.
                 if not broker.has_hold(coin):
                     amt = min(config.bull_hold_pct * broker.capital_base, broker.cash)
-                    if amt >= p.unit_usdt:
+                    if amt >= pc.unit_usdt:
                         broker.buy_hold(coin, price, amt)
                         note = " HOLD-BUY"
                         actions.append(f"🟢 {c}: BULL — bought hold ${amt:.0f} to ride")
@@ -193,12 +203,12 @@ def run_account(account) -> tuple[str | None, str | None]:
                     actions.append(f"🏁 {c}: exited BULL hold, pnl {pnl:+.0f}")
                 # NEUTRAL / BEAR → adaptive grid
                 sells, do_buy = plan_actions(regime, broker.bags(coin), price, broker.cash,
-                                             up, p, config.regime_adaptive)
+                                             up, pc, config.regime_adaptive)
                 sold = 0
                 for i in sorted(sells, reverse=True):
                     broker.sell_bag(coin, i, price); sold += 1
                 if do_buy:
-                    broker.buy(coin, price, p.unit_usdt); note += " BUY"
+                    broker.buy(coin, price, pc.unit_usdt); note += " BUY"
                 if sold:
                     note = f" SOLD {sold}" + note
                     actions.append(f"💰 {c}: sold {sold} bag(s) @ {price:g}")

@@ -132,6 +132,59 @@ def test_order_invalidates_balance_cache() -> None:
         bt._signed, bt._bal_cache = orig, None
 
 
+# ── NOTIONAL / lot-step round-trip (the 2026-08-22 -1013 on BTCUSDC) ─────
+
+def _seed_notional() -> None:
+    bt._notional_cache.update({sym: 5.0 for sym in LOT_STEPS})
+
+
+def test_round_qty_keeps_a_qty_that_sits_exactly_on_the_step() -> None:
+    """A qty already ON the LOT_SIZE step must survive rounding intact.
+
+    The old float maths (`int(qty * 10**places)`) dropped a WHOLE step here:
+    0.00007 * 100000 == 6.999999999999999 -> 6 -> 0.00006. On BTC that is
+    ~$0.78, which pushed a $5.48 TP-sell under the $5 NOTIONAL floor."""
+    _seed_cache()
+    assert bt.round_qty("BTCUSDC", 0.00007) == 0.00007
+    assert bt.qty_str("BTCUSDC", 0.00007) == "0.00007"
+    assert bt.qty_str("ETHUSDC", 0.0024) == "0.0024"      # was '0.0023' (-$0.25)
+    assert bt.qty_str("BNBUSDC", 0.008) == "0.008"
+    # still a floor, never a round-up over the real balance
+    assert bt.qty_str("BTCUSDC", 0.000069947) == "0.00006"
+
+
+def test_sell_below_min_notional_is_refused_before_the_api() -> None:
+    """A dust bag fails locally with a readable message — no -1013 round-trip."""
+    _seed_cache(); _seed_notional()
+    calls = []
+    orig, bt._signed = bt._signed, _stub_signed(calls)
+    try:
+        try:
+            bt.market_sell("BTCUSDC", 0.000069947, 78444.44)   # -> 0.00006 = $4.71
+        except bt.TradeError as exc:
+            assert "minNotional" in str(exc), exc
+        else:
+            raise AssertionError("expected TradeError for a sub-$5 sell")
+        assert not [c for c in calls if c[1].endswith("/order")], "must not hit the API"
+        # the same qty at a price that clears $5 goes through
+        bt.market_sell("BTCUSDC", 0.000069947, 90000.0)        # 0.00006 = $5.40
+        assert [c for c in calls if c[1].endswith("/order")], "legal sell must be sent"
+    finally:
+        bt._signed = orig
+        bt._invalidate_balances()
+
+
+def test_min_round_trip_unit_covers_two_lot_steps() -> None:
+    """Bag floor = NOTIONAL + the step lost on the buy + the one lost on the sell."""
+    _seed_cache(); _seed_notional()
+    btc = bt.min_round_trip_unit("BTCUSDC", 78_265.0)
+    assert btc > 6.5, btc          # the $6 unit that broke was NOT enough
+    assert btc < 7.5, btc
+    # a $6 bag stays fine where the step is small relative to the bag
+    assert bt.min_round_trip_unit("ETHUSDC", 2_511.0) < 6.0     # step ~$0.25
+    assert bt.min_round_trip_unit("BNBUSDC", 715.0) < 6.5       # step ~$0.72
+
+
 # ── multi-account + whitelist ─────────────────────────────────────────────
 
 def test_account_active_flag() -> None:

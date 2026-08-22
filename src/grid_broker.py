@@ -121,6 +121,10 @@ class GridBroker:
         holds = sum(self.hold_value(s, prices.get(s, 0.0)) for s in self.holds)
         return self.cash + pending + holds
 
+    def min_unit(self, symbol: str, price: float) -> float:
+        """Exchange-imposed floor on the bag size. Paper has no filters → 0."""
+        return 0.0
+
     @property
     def total_bags(self) -> int:
         return sum(len(b) for b in self.positions.values())
@@ -173,6 +177,14 @@ class LiveGridBroker(GridBroker):
                              price=avg, qty=qty, usdt=quote, pnl=0.0)
         return bag
 
+    def min_unit(self, symbol: str, price: float) -> float:
+        """Bag floor from this symbol's real filters — below it a bought bag
+        cannot be sold again (see binance_trade.min_round_trip_unit)."""
+        try:
+            return self._bt.min_round_trip_unit(symbol, price)
+        except Exception:          # filters unreachable → keep the configured unit
+            return 0.0
+
     def _sellable(self, symbol: str, want: float) -> float:
         """Cap the sell qty at the REAL free base balance. The buy fee is charged
         in the base asset, so our ledger qty is a hair more than what's actually
@@ -183,7 +195,7 @@ class LiveGridBroker(GridBroker):
 
     def sell_bag(self, symbol: str, index: int, price: float) -> float:
         bag = self.bags(symbol)[index]
-        resp = self._bt.market_sell(symbol, self._sellable(symbol, bag["qty"]))
+        resp = self._bt.market_sell(symbol, self._sellable(symbol, bag["qty"]), price)
         qty, quote, avg = self._bt.fill_amounts(resp, price)
         self.bags(symbol).pop(index)
         self.cash += quote
@@ -205,7 +217,7 @@ class LiveGridBroker(GridBroker):
 
     def sell_hold(self, symbol: str, price: float) -> float:
         h = self.holds[symbol]
-        resp = self._bt.market_sell(symbol, self._sellable(symbol, h["qty"]))
+        resp = self._bt.market_sell(symbol, self._sellable(symbol, h["qty"]), price)
         qty, quote, avg = self._bt.fill_amounts(resp, price)
         self.holds.pop(symbol)
         self.cash += quote
