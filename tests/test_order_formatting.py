@@ -252,6 +252,81 @@ def test_hold_split_refused_when_a_half_would_be_dust() -> None:
     assert not b.hold_splittable("BTCUSDC", 2000.0, 0.5)    # no hold at all
 
 
+# ── cycle resilience (a blipped read must not cost 4 hours) ───────────────
+
+def test_retry_survives_a_transient_failure() -> None:
+    """A read that fails once then works must NOT take the cycle down."""
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ConnectionError("connection reset by peer")
+        return "ok"
+
+    orig, runner.time.sleep = runner.time.sleep, lambda _s: None
+    try:
+        assert runner._retry(flaky, "flaky read", delay=0) == "ok"
+        assert len(calls) == 3, "should have retried twice before succeeding"
+    finally:
+        runner.time.sleep = orig
+
+
+def test_retry_gives_up_and_reraises() -> None:
+    """A read that never works still raises — the caller decides what that means."""
+    orig, runner.time.sleep = runner.time.sleep, lambda _s: None
+    try:
+        def dead():
+            raise ConnectionError("down")
+        try:
+            runner._retry(dead, "dead read", attempts=2, delay=0)
+        except ConnectionError:
+            pass
+        else:
+            raise AssertionError("expected the last failure to propagate")
+    finally:
+        runner.time.sleep = orig
+
+
+def test_one_account_failure_does_not_kill_the_others() -> None:
+    """Accounts trade separate keys and separate state — a blown cycle on one
+    must not cost the other its take-profits. The owner still gets told."""
+    a = Account(1, "First", "first", "k1", "s1")
+    b = Account(2, "Second", "second", "k2", "s2")
+    ran, sent = [], []
+
+    def fake_run(account):
+        ran.append(account.name)
+        if account.name == "First":
+            raise RuntimeError("binance timeout on balance read")
+        return ("report for Second", None)
+
+    orig = (runner.run_account, runner._process_subscriptions, runner._recipients,
+            runner.notify.send, CFG.accounts, CFG.trading_mode)
+    runner.run_account = fake_run
+    runner._process_subscriptions = lambda: None
+    runner._recipients = lambda: ["999"]
+    runner.notify.send = lambda text, chat_id=None: sent.append(text) or True
+    object.__setattr__(CFG, "accounts", (a, b))
+    object.__setattr__(CFG, "trading_mode", "live")
+    try:
+        try:
+            runner.main()
+        except SystemExit as exc:                 # marks the run failed for Railway
+            assert "1/2" in str(exc), exc
+        else:
+            raise AssertionError("a failed account must surface as a non-zero exit")
+        assert ran == ["First", "Second"], f"second account must still run, got {ran}"
+        assert any("report for Second" in t for t in sent), "its report must be sent"
+        assert any("не отработал" in t and "First" in t for t in sent), \
+            "the failure must be reported, not swallowed"
+    finally:
+        (runner.run_account, runner._process_subscriptions, runner._recipients,
+         runner.notify.send, accts, mode) = (*orig,)
+        object.__setattr__(CFG, "accounts", accts)
+        object.__setattr__(CFG, "trading_mode", mode)
+
+
 # ── multi-account + whitelist ─────────────────────────────────────────────
 
 def test_account_active_flag() -> None:

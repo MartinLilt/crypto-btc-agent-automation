@@ -11,6 +11,9 @@ You switch only TRADING_MODE (paper|live). Run:
 
 from __future__ import annotations
 
+import time
+import traceback
+
 from src.binance_api import get_candles
 from src.config import config
 from dataclasses import replace
@@ -23,6 +26,30 @@ from src.regime import Regime, detect_regime, resample, tf_factor
 from src.universe import get_universe
 
 _REGIME_ICON = {Regime.BULL: "🟢BULL", Regime.NEUTRAL: "⚪NEUTRAL", Regime.BEAR: "🔴BEAR"}
+
+# The cron fires once every 4h and Railway never restarts a failed run, so a
+# single blipped HTTP call used to cost a whole cycle — no take-profits, no
+# report. Reads are retried; ORDERS ARE NOT (a resend could double-trade when
+# the first request actually reached Binance and only the reply was lost).
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY = 5
+
+
+def _retry(fn, what: str, attempts: int = _RETRY_ATTEMPTS, delay: float = _RETRY_DELAY):
+    """Run a READ-ONLY step, retrying transient failures with a growing pause.
+
+    Never wrap anything that places an order in this — see the note above.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt == attempts:
+                raise
+            print(f"  ⚠ {what}: {type(exc).__name__}: {str(exc)[:70]} — "
+                  f"retry {attempt}/{attempts - 1} in {delay:.0f}s")
+            time.sleep(delay)
+            delay *= 2
 
 
 def _fmt_price(x: float) -> str:
@@ -136,7 +163,9 @@ def run_account(account) -> tuple[str | None, str | None]:
     else:
         print()
 
-    broker = get_grid_broker(account)
+    # reads the store AND the live Binance balance — the exact call whose
+    # network blip used to take down the whole cycle for every account
+    broker = _retry(lambda: get_grid_broker(account), f"broker init [{account.name}]")
     print(f"storage           : {broker.backend} [slot {account.slot}]")
 
     # Bag size for this cycle. When GRID_UNIT_PCT>0 it tracks the live balance,
@@ -159,9 +188,14 @@ def run_account(account) -> tuple[str | None, str | None]:
 
     for coin in universe:
         try:
-            candles = get_candles(symbol=coin, interval=config.interval, limit=limit)
+            candles = _retry(lambda: get_candles(symbol=coin, interval=config.interval,
+                                                 limit=limit), f"candles {coin}", delay=3)
         except Exception as exc:
+            # a skipped coin means no take-profit for it this cycle, so it is
+            # an error worth reporting — not a silent console line
             print(f"{coin:>9}  (skipped: {str(exc)[:40]})")
+            errors.append(f"⏭ {coin.replace(config.quote_asset, '')}: нет данных, "
+                          f"пропущен ({type(exc).__name__})")
             continue
         closes = [c.close for c in candles]
         price = closes[-1]
@@ -233,6 +267,12 @@ def run_account(account) -> tuple[str | None, str | None]:
             # copy, so the exact Binance code/msg was invisible in the cloud logs.
             print(f"  ⚠ {coin} ORDER FAILED — {type(exc).__name__}: {exc}")
             errors.append(f"❌ {c}: {str(exc)[:90]}")
+
+        # Persist per coin: the ledger is only in memory until this call, so a
+        # crash mid-loop used to leave orders that Binance executed and our
+        # state never recorded (a phantom bag). Now each coin is committed as
+        # soon as it is done.
+        broker.save()
 
         n = len(broker.bags(coin))
         hv = broker.hold_value(coin, price)
@@ -371,9 +411,22 @@ def _recipients() -> list:
     return sorted(ids)
 
 
+def _failure_message(account, exc: Exception) -> str:
+    """What the owner sees when an account's cycle could not run at all."""
+    return (f"<b>‼️ {account.name}</b> · цикл не отработал\n\n"
+            f"<code>{type(exc).__name__}: {str(exc)[:250]}</code>\n\n"
+            f"Состояние не изменено — ни одна сделка не потеряна. "
+            f"Следующая попытка через 4 часа.")
+
+
 def main() -> None:
-    # Whitelist enrollment first, so a just-approved user gets this cycle's report.
-    _process_subscriptions()
+    # Whitelist enrollment first, so a just-approved user gets this cycle's
+    # report. Best-effort: the DB or Telegram being down must not cost a cycle
+    # of TRADING, which is the part that actually moves money.
+    try:
+        _process_subscriptions()
+    except Exception as exc:
+        print(f"⚠ subscription poll failed: {type(exc).__name__}: {str(exc)[:80]}")
 
     live = config.trading_mode == "live"
     to_run = [a for a in config.accounts if (a.active if live else True)]
@@ -381,15 +434,34 @@ def main() -> None:
     for a in skipped:
         print(f"— skipping {a.name} (@{a.tg_username}): no API keys yet —")
 
-    targets = _recipients()
+    try:
+        targets = _recipients()
+    except Exception as exc:
+        print(f"⚠ recipient lookup failed: {type(exc).__name__}: {str(exc)[:80]}")
+        targets = [config.telegram_chat_id] if config.telegram_chat_id else []
+
+    failed = 0
     for account in to_run:
-        main_msg, history = run_account(account)
+        # One account's blown cycle must not take the others down with it: each
+        # trades its OWN Binance keys and its own state slot, so they are
+        # independent by construction — the code just never honoured that.
+        try:
+            main_msg, history = run_account(account)
+        except Exception as exc:
+            failed += 1
+            print(f"‼️ {account.name}: cycle FAILED — {type(exc).__name__}: {exc}")
+            traceback.print_exc()
+            main_msg, history = _failure_message(account, exc), None
         for chat in targets:
             if main_msg:
                 notify.send(main_msg, chat)
             if history:
                 notify.send(history, chat)
         print()  # blank line between accounts in the console log
+
+    if failed:
+        # non-zero exit marks the run as failed in Railway's deployment view
+        raise SystemExit(f"{failed}/{len(to_run)} account cycle(s) failed")
 
 
 if __name__ == "__main__":
