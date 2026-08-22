@@ -103,7 +103,8 @@ def regime_series(closes, ma_win=RG_MA, look=RG_LOOK, flat=RG_FLAT,
 def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
              hold_pct=HOLD_PCT, max_bags=None, start=TOTAL, lo=0, hi=None,
              reg=None, hold_trail=0.0, hold_tp=0.0, hold_tp_frac=0.5,
-             max_deploy=1.0, exec_mode="close", tp_pct=None):
+             max_deploy=1.0, exec_mode="close", tp_pct=None, decide_every=1, phase=0,
+             block_hold=None, block_bag=None):
     max_bags = P.max_bags if max_bags is None else max_bags
     tp_pct = P.tp_pct if tp_pct is None else tp_pct
     coins = [c for c in BASKET if c in data]
@@ -135,6 +136,15 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
 
     n = n if hi is None else min(n, hi)
     for i in range(max(WARM, lo), n):
+        # decide_every>1 = a SLOWER cron (2 = every 8h, 3 = 12h). Indicators are
+        # still the 4h ones; the bot simply wakes up less often. Testing whether
+        # the "being slow pays" effect keeps going.
+        if decide_every > 1 and i % decide_every != phase:
+            equity = cash + sum(b["qty"] * closes[c][i] for c in coins for b in bags[c]) \
+                + sum(holds[c]["qty"] * closes[c][i] for c in coins if holds[c])
+            peak_eq = max(peak_eq, equity)
+            mdd = max(mdd, (peak_eq - equity) / peak_eq)
+            continue
         invested = sum(b["cost"] for c in coins for b in bags[c]) \
             + sum(h["cost"] for h in holds.values() if h)
         capital_base = cash + invested
@@ -145,6 +155,10 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
             regime = reg[c][i] if adaptive else NEUTRAL
 
             if use_hold and regime == BULL:
+                # shadow-flow gate: refuse to START a ride while the move is
+                # being carried by leverage (an existing hold is untouched)
+                if holds[c] is None and block_hold and block_hold[c][i]:
+                    continue
                 h = holds[c]
                 if h is not None:
                     h["peak"] = max(h["peak"], price)
@@ -199,6 +213,8 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
             want = lowest is None or price <= lowest * (1 - P.step_pct / 100)
             deployed_grid = sum(b["cost"] for cc in coins for b in bags[cc])
             room = deployed_grid + unit <= max_deploy * capital_base
+            if block_bag and block_bag[c][i]:
+                continue                       # shadow-flow gate on new bags
             if up and want and cash >= unit and len(bags[c]) < max_bags and room:
                 qty = (unit - unit * FEE) / price
                 bags[c].append({"entry": price, "qty": qty, "cost": unit, "i": i})
