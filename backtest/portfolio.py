@@ -103,10 +103,18 @@ def regime_series(closes, ma_win=RG_MA, look=RG_LOOK, flat=RG_FLAT,
 def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
              hold_pct=HOLD_PCT, max_bags=None, start=TOTAL, lo=0, hi=None,
              reg=None, hold_trail=0.0, hold_tp=0.0, hold_tp_frac=0.5,
-             max_deploy=1.0):
+             max_deploy=1.0, exec_mode="close", tp_pct=None):
     max_bags = P.max_bags if max_bags is None else max_bags
+    tp_pct = P.tp_pct if tp_pct is None else tp_pct
     coins = [c for c in BASKET if c in data]
     closes = {c: [k.close for k in data[c]] for c in coins}
+    # "close": decide on the 4h close, as the live cron does — a take-profit
+    #          touched INSIDE the bar is only noticed hours later, at whatever
+    #          price the bar happens to end on.
+    # "high" : the bag's TP is checked against the bar's HIGH and fills at the
+    #          TP price exactly — what a resting limit order on the exchange
+    #          would have captured. The upper bound on what the blindness costs.
+    highs = {c: [k.high for k in data[c]] for c in coins}
     n = min(len(closes[c]) for c in coins)
     sma100 = {c: sma_arr(closes[c], P.sma_win) for c in coins}
     reg = reg or {c: regime_series(closes[c]) for c in coins}
@@ -173,9 +181,12 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
             if not use_grid:
                 continue
             keep = []                          # bank every bag at its TP
+            touch = highs[c][i] if exec_mode == "high" else price
             for b in bags[c]:
-                if price >= b["entry"] * (1 + P.tp_pct / 100):
-                    proceeds = b["qty"] * price * (1 - FEE)
+                tp = b["entry"] * (1 + tp_pct / 100)
+                if touch >= tp:
+                    fill = tp if exec_mode == "high" else price
+                    proceeds = b["qty"] * fill * (1 - FEE)
                     cash += proceeds; r_grid += proceeds - b["cost"]; n_grid += 1
                 else:
                     keep.append(b)
