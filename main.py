@@ -16,7 +16,7 @@ import traceback
 
 from src.binance_api import get_candles
 from src.config import config
-from src.ratelimit import BinanceBanned, preflight, wait_out
+from src.ratelimit import BinanceBanned, preflight, wait_out, weight_report
 from dataclasses import replace
 
 from src.grid import effective_unit, is_uptrend, params_from_config, plan_actions
@@ -346,6 +346,12 @@ def run_account(account) -> tuple[str | None, str | None]:
         f"{c.replace(config.quote_asset,''):}:{regimes[c].value[0]}" for c in regimes
     )
     print(f"regime            : {reg_line}")
+    # Binance's own instruction is to watch this header. Our whole cycle costs
+    # ~30, so a high reading is a neighbour on the shared egress IP — the early
+    # warning we did not have before the 2026-08-23/24 bans.
+    pressure = weight_report()
+    if pressure:
+        print(pressure)
 
     # ── per-coin position detail (what each position is waiting for) ──────
     rows: list[tuple[str, str, str, str, str]] = []

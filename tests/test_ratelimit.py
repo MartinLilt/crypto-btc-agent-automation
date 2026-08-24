@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src import ratelimit  # noqa: E402
 from src.ratelimit import BinanceBanned, check, parse_until, wait_out  # noqa: E402
 
 # The exact body Binance sent on 2026-08-24.
@@ -93,6 +94,48 @@ def test_seconds_left_never_goes_negative():
     stale = BinanceBanned("banned", until_ms=int((time.time() - 3600) * 1000), status=418)
     assert stale.seconds_left == 0.0
     assert BinanceBanned("rate-limited").seconds_left == 0.0
+
+
+def test_used_weight_header_is_recorded_on_every_answer():
+    """Binance tells us to watch X-MBX-USED-WEIGHT-1M; before the bans we never
+    read it, so a neighbour filling the shared IP's budget was invisible."""
+    ratelimit._peak_weight = 0
+    check("/api/v3/klines", 200, "[]", {"X-MBX-USED-WEIGHT-1M": "38"})
+    assert ratelimit.peak_weight() == 38
+    check("/api/v3/klines", 200, "[]", {"x-mbx-used-weight-1m": "1200"})
+    assert ratelimit.peak_weight() == 1200, "must keep the PEAK, not the last"
+    check("/api/v3/klines", 200, "[]", {"X-MBX-USED-WEIGHT-1M": "40"})
+    assert ratelimit.peak_weight() == 1200
+
+
+def test_weight_report_flags_traffic_that_cannot_be_ours():
+    ratelimit._peak_weight = 0
+    assert ratelimit.weight_report() is None, "silent when Binance told us nothing"
+    ratelimit._peak_weight = 45                     # our own cycle, nothing to see
+    assert "‼️" not in ratelimit.weight_report()
+    ratelimit._peak_weight = 2500                   # 80x our whole cycle
+    assert "‼️" in ratelimit.weight_report()
+    ratelimit._peak_weight = 0
+
+
+def test_a_junk_weight_header_is_ignored_not_fatal():
+    ratelimit._peak_weight = 0
+    check("/api/v3/klines", 200, "[]", {"X-MBX-USED-WEIGHT-1M": "n/a"})
+    check("/api/v3/klines", 200, "[]", {})
+    assert ratelimit.peak_weight() == 0
+
+
+def test_the_furthest_deadline_wins():
+    """Binance sends Retry-After on a 418 too. Coming back on the shorter of the
+    two would re-arm the ban, so the later deadline must win."""
+    body_until = int((time.time() + 60) * 1000)
+    body = f'{{"code":-1003,"msg":"IP banned until {body_until}."}}'
+    try:
+        check("/api/v3/account", 418, body, {"Retry-After": "600"})
+    except BinanceBanned as exc:
+        assert exc.seconds_left > 500, f"took the shorter deadline: {exc.seconds_left}"
+    else:
+        raise AssertionError("a 418 must raise BinanceBanned")
 
 
 if __name__ == "__main__":

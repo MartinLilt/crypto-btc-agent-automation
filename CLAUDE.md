@@ -16,6 +16,7 @@ Base Python project. Environment is set up; no application code yet.
 └── obsidian/
     └── vault/          # LOCAL Obsidian vault — open THIS folder in Obsidian
         ├── daily/      # one note per day: YYYY-MM-DD.md
+        ├── reference/  # durable notes: exchange policies, limits, checklists
         └── logs/
             └── Dev Log.md
 ```
@@ -34,6 +35,8 @@ Base Python project. Environment is set up; no application code yet.
 The project has its **own** local vault at `obsidian/vault/`.
 
 - `daily/` — daily notes, `YYYY-MM-DD.md`.
+- `reference/` — durable reference that outlives a session, e.g.
+  `Binance API policy.md` (rate limits, ban rules, ToS lines we must not cross).
 - `logs/Dev Log.md` — one entry per session / meaningful change.
 
 Add a Dev Log entry whenever the project changes.
