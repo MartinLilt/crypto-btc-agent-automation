@@ -6,7 +6,7 @@ Base Python project. Environment is set up; no application code yet.
 
 ```
 .
-├── CLAUDE.md            # this file
+├── AGENTS.md            # this file
 ├── main.py             # entrypoint (empty for now)
 ├── requirements.txt    # deps (none yet)
 ├── .gitignore
