@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import requests
 
+from . import ratelimit
 from .config import config
 
 # Public production API — market data is the same for everyone and needs no key.
@@ -35,6 +36,9 @@ def _get(path: str, params: dict | None = None) -> object:
     except requests.RequestException as exc:
         raise BinanceAPIError(f"request to {url} failed: {exc}") from exc
 
+    # 418/429 first: a ban is not a transient blip, and retrying into one is
+    # what escalates it (see src/ratelimit.py).
+    ratelimit.check(path, resp.status_code, resp.text, resp.headers)
     if resp.status_code != 200:
         raise BinanceAPIError(
             f"{path} -> HTTP {resp.status_code}: {resp.text[:200]}"

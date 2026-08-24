@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 
 import requests
 
+from . import ratelimit
 from .config import config
 
 _TIMEOUT = 10
@@ -66,6 +67,9 @@ def _signed(method: str, path: str, params: dict) -> dict:
                              timeout=_TIMEOUT)
     except requests.RequestException as exc:
         raise TradeError(f"request {path} failed: {exc}") from exc
+    # A ban must surface as BinanceBanned, never as a generic TradeError the
+    # read-retry would happily hammer three more times (see src/ratelimit.py).
+    ratelimit.check(path, r.status_code, r.text, r.headers)
     if r.status_code != 200:
         raise TradeError(f"{path} -> HTTP {r.status_code}: {r.text[:200]}")
     return r.json()
@@ -98,18 +102,47 @@ def free_quote() -> float:
     return get_free_balances().get(config.quote_asset, 0.0)
 
 
-def _load_filters(symbol: str) -> None:
-    """Fetch and cache this symbol's LOT_SIZE step and NOTIONAL minimum."""
-    info = requests.get(f"{_base_url()}/api/v3/exchangeInfo",
-                        params={"symbol": symbol}, timeout=_TIMEOUT).json()
+def _fetch_exchange_info(params: dict) -> dict:
+    """GET /api/v3/exchangeInfo, surfacing a ban instead of blowing up on JSON."""
+    r = requests.get(f"{_base_url()}/api/v3/exchangeInfo",
+                     params=params, timeout=_TIMEOUT)
+    ratelimit.check("/api/v3/exchangeInfo", r.status_code, r.text, r.headers)
+    if r.status_code != 200:
+        raise TradeError(f"/api/v3/exchangeInfo -> HTTP {r.status_code}: {r.text[:200]}")
+    return r.json()
+
+
+def _store_filters(entry: dict) -> None:
     step, floor = "0.00000001", _DEFAULT_MIN_NOTIONAL
-    for f in info["symbols"][0]["filters"]:
+    for f in entry["filters"]:
         if f["filterType"] == "LOT_SIZE":
             step = f["stepSize"]
         elif f["filterType"] in ("NOTIONAL", "MIN_NOTIONAL"):
             floor = float(f.get("minNotional", floor))
-    _lot_cache[symbol] = step
-    _notional_cache[symbol] = floor
+    _lot_cache[entry["symbol"]] = step
+    _notional_cache[entry["symbol"]] = floor
+
+
+def preload_filters(symbols) -> None:
+    """Cache LOT_SIZE/NOTIONAL for the whole basket in ONE request.
+
+    exchangeInfo costs weight 20 whether it is asked about one symbol or ten, so
+    four per-symbol calls burned 80 of the cycle's ~110 weight for nothing. The
+    process restarts every cron run, so this cache is per-cycle either way.
+    Best-effort: on failure the lazy per-symbol path below still covers us.
+    """
+    wanted = [s for s in dict.fromkeys(symbols) if s not in _lot_cache]
+    if not wanted:
+        return
+    # Binance wants a JSON array with no spaces: symbols=["BTCUSDC","ETHUSDC"]
+    payload = "[" + ",".join(f'"{s}"' for s in wanted) + "]"
+    for entry in _fetch_exchange_info({"symbols": payload})["symbols"]:
+        _store_filters(entry)
+
+
+def _load_filters(symbol: str) -> None:
+    """Fetch and cache this symbol's LOT_SIZE step and NOTIONAL minimum."""
+    _store_filters(_fetch_exchange_info({"symbol": symbol})["symbols"][0])
 
 
 def _lot_step(symbol: str) -> str:

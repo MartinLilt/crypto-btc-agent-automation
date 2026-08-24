@@ -16,6 +16,7 @@ import traceback
 
 from src.binance_api import get_candles
 from src.config import config
+from src.ratelimit import BinanceBanned, preflight, wait_out
 from dataclasses import replace
 
 from src.grid import effective_unit, is_uptrend, params_from_config, plan_actions
@@ -33,18 +34,35 @@ _REGIME_ICON = {Regime.BULL: "🟢BULL", Regime.NEUTRAL: "⚪NEUTRAL", Regime.BE
 # the first request actually reached Binance and only the reply was lost).
 _RETRY_ATTEMPTS = 3
 _RETRY_DELAY = 5
+# How many times one step may sit out an IP ban. One is enough for a real ban
+# (we sleep until its stated expiry); a second means it was re-armed while we
+# waited, and then hanging around only invites a longer one.
+_BAN_WAITS = 1
 
 
 def _retry(fn, what: str, attempts: int = _RETRY_ATTEMPTS, delay: float = _RETRY_DELAY):
     """Run a READ-ONLY step, retrying transient failures with a growing pause.
 
+    An IP ban (418/429) is handled apart from a blip: retrying into one is what
+    escalates it — Binance counts every request sent while banned — so we sleep
+    until its stated expiry instead, and give up at once when it outlasts the
+    BAN_MAX_WAIT_MIN cap. Sitting out a ban does not spend a blip attempt.
+
     Never wrap anything that places an order in this — see the note above.
     """
-    for attempt in range(1, attempts + 1):
+    attempt, ban_waits = 0, 0
+    while True:
+        attempt += 1
         try:
             return fn()
+        except BinanceBanned as banned:
+            print(f"  ⛔ {what}: {banned.describe()}")
+            if ban_waits >= _BAN_WAITS or not wait_out(banned, config.ban_max_wait_min * 60):
+                raise
+            ban_waits += 1
+            attempt -= 1          # waiting out a ban is not a failed attempt
         except Exception as exc:
-            if attempt == attempts:
+            if attempt >= attempts:
                 raise
             print(f"  ⚠ {what}: {type(exc).__name__}: {str(exc)[:70]} — "
                   f"retry {attempt}/{attempts - 1} in {delay:.0f}s")
@@ -167,6 +185,18 @@ def run_account(account) -> tuple[str | None, str | None]:
     # network blip used to take down the whole cycle for every account
     broker = _retry(lambda: get_grid_broker(account), f"broker init [{account.name}]")
     print(f"storage           : {broker.backend} [slot {account.slot}]")
+
+    if config.trading_mode == "live":
+        # One weight-20 exchangeInfo for the whole basket instead of one per
+        # coin — takes the cycle from ~110 request weight down to ~30.
+        try:
+            from src import binance_trade
+            binance_trade.preload_filters(universe)
+        except BinanceBanned:
+            raise
+        except Exception as exc:
+            print(f"  ⚠ filter preload: {type(exc).__name__}: {str(exc)[:70]} "
+                  f"— falling back to per-coin lookups")
 
     # Bag size for this cycle. When GRID_UNIT_PCT>0 it tracks the live balance,
     # so a deposit auto-scales the bags (with a min-notional floor).
@@ -411,6 +441,22 @@ def _recipients() -> list:
     return sorted(ids)
 
 
+def _ban_message(banned: BinanceBanned) -> str:
+    """What the owner sees when Binance has shut the whole IP out.
+
+    Deliberately says it is NOT our traffic: one cycle spends ~30 request
+    weight per 4h (~110 before the exchangeInfo batching) against a 6000/min
+    budget, and the ban was already running before our first call. Railway's
+    static outbound IPs are shared with other customers, so it is a neighbour's
+    bot that gets the address banned."""
+    return ("<b>⛔ Binance: IP забанен</b>\n\n"
+            f"<code>{banned.describe()}</code>\n\n"
+            "Цикл пропущен, состояние не тронуто — ни одна сделка не потеряна.\n"
+            "Это не наш трафик: мы тратим ~30 единиц веса раз в 4 часа при лимите "
+            "6000 в минуту. Статический IP на Railway общий с другими клиентами — "
+            "банят соседа, прилетает нам.")
+
+
 def _failure_message(account, exc: Exception) -> str:
     """What the owner sees when an account's cycle could not run at all."""
     return (f"<b>‼️ {account.name}</b> · цикл не отработал\n\n"
@@ -440,6 +486,15 @@ def main() -> None:
         print(f"⚠ recipient lookup failed: {type(exc).__name__}: {str(exc)[:80]}")
         targets = [config.telegram_chat_id] if config.telegram_chat_id else []
 
+    # Weight-1 gate before anything expensive: if this IP is banned, every
+    # further request only feeds the escalation counter.
+    banned = preflight(config.ban_max_wait_min * 60)
+    if banned is not None:
+        print(f"‼️ cycle skipped — {banned.describe()}")
+        for chat in targets:
+            notify.send(_ban_message(banned), chat)
+        return
+
     failed = 0
     for account in to_run:
         # One account's blown cycle must not take the others down with it: each
@@ -460,8 +515,13 @@ def main() -> None:
         print()  # blank line between accounts in the console log
 
     if failed:
-        # non-zero exit marks the run as failed in Railway's deployment view
-        raise SystemExit(f"{failed}/{len(to_run)} account cycle(s) failed")
+        # Exit 0 on purpose. A non-zero exit marks the deployment CRASHED, and a
+        # crashed deployment stops firing its cron: on 2026-08-23 the 08:00 ban
+        # crashed the run and the 12:00 cycle never started — the bot only came
+        # back on a manual redeploy. The failure is loud in the log and in
+        # Telegram; keeping the schedule alive matters more than a red badge.
+        print(f"‼️ {failed}/{len(to_run)} account cycle(s) failed — "
+              f"schedule kept alive, next run in 4h")
 
 
 if __name__ == "__main__":

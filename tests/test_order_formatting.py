@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import binance_trade as bt  # noqa: E402
 from src.config import config as CFG, Account  # noqa: E402
+from src.ratelimit import BinanceBanned  # noqa: E402
 from src.store import JsonStore  # noqa: E402
 import main as runner  # noqa: E402
 
@@ -302,29 +304,84 @@ def test_one_account_failure_does_not_kill_the_others() -> None:
         return ("report for Second", None)
 
     orig = (runner.run_account, runner._process_subscriptions, runner._recipients,
-            runner.notify.send, CFG.accounts, CFG.trading_mode)
+            runner.notify.send, runner.preflight, CFG.accounts, CFG.trading_mode)
     runner.run_account = fake_run
     runner._process_subscriptions = lambda: None
     runner._recipients = lambda: ["999"]
     runner.notify.send = lambda text, chat_id=None: sent.append(text) or True
+    runner.preflight = lambda _cap: None          # no network in tests
     object.__setattr__(CFG, "accounts", (a, b))
     object.__setattr__(CFG, "trading_mode", "live")
     try:
+        # Exits 0 ON PURPOSE. A non-zero exit marks the Railway deployment
+        # CRASHED, and a crashed deployment stops firing its cron: after the
+        # 2026-08-23 08:00 ban crashed the run, the 12:00 cycle never started
+        # and the bot only came back on a manual redeploy. The failure is loud
+        # in the log and in Telegram instead.
         try:
             runner.main()
-        except SystemExit as exc:                 # marks the run failed for Railway
-            assert "1/2" in str(exc), exc
-        else:
-            raise AssertionError("a failed account must surface as a non-zero exit")
+        except SystemExit as exc:
+            raise AssertionError(
+                f"a failed account must NOT crash the run (kills the cron): {exc}")
         assert ran == ["First", "Second"], f"second account must still run, got {ran}"
         assert any("report for Second" in t for t in sent), "its report must be sent"
         assert any("не отработал" in t and "First" in t for t in sent), \
             "the failure must be reported, not swallowed"
     finally:
         (runner.run_account, runner._process_subscriptions, runner._recipients,
-         runner.notify.send, accts, mode) = (*orig,)
+         runner.notify.send, runner.preflight, accts, mode) = (*orig,)
         object.__setattr__(CFG, "accounts", accts)
         object.__setattr__(CFG, "trading_mode", mode)
+
+
+def test_a_banned_ip_skips_the_cycle_without_touching_binance() -> None:
+    """When the pre-flight ping says the IP is banned, the cycle must not run a
+    single account — every extra request while banned extends the ban."""
+    a = Account(1, "First", "first", "k1", "s1")
+    ran, sent = [], []
+    banned = BinanceBanned("banned", until_ms=int((time.time() + 900) * 1000), status=418)
+
+    orig = (runner.run_account, runner._process_subscriptions, runner._recipients,
+            runner.notify.send, runner.preflight, CFG.accounts, CFG.trading_mode)
+    runner.run_account = lambda account: ran.append(account.name) or ("r", None)
+    runner._process_subscriptions = lambda: None
+    runner._recipients = lambda: ["999"]
+    runner.notify.send = lambda text, chat_id=None: sent.append(text) or True
+    runner.preflight = lambda _cap: banned
+    object.__setattr__(CFG, "accounts", (a,))
+    object.__setattr__(CFG, "trading_mode", "live")
+    try:
+        runner.main()
+        assert ran == [], f"no account may trade while the IP is banned, ran {ran}"
+        assert any("забанен" in t for t in sent), "the owner must be told it is a ban"
+    finally:
+        (runner.run_account, runner._process_subscriptions, runner._recipients,
+         runner.notify.send, runner.preflight, accts, mode) = (*orig,)
+        object.__setattr__(CFG, "accounts", accts)
+        object.__setattr__(CFG, "trading_mode", mode)
+
+
+def test_retry_never_hammers_a_ban_it_cannot_wait_out() -> None:
+    """A long ban must propagate on the FIRST answer — retrying into a live ban
+    is exactly what escalates it from two minutes to three days."""
+    calls = []
+
+    def banned_read():
+        calls.append(1)
+        raise BinanceBanned("banned", until_ms=int((time.time() + 3 * 86400) * 1000),
+                            status=418)
+
+    orig, runner.time.sleep = runner.time.sleep, lambda _s: None
+    try:
+        try:
+            runner._retry(banned_read, "account read", attempts=3, delay=0)
+        except BinanceBanned:
+            pass
+        else:
+            raise AssertionError("a ban we cannot outwait must propagate")
+        assert len(calls) == 1, f"exactly one request may hit a ban, sent {len(calls)}"
+    finally:
+        runner.time.sleep = orig
 
 
 # ── multi-account + whitelist ─────────────────────────────────────────────

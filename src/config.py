@@ -124,6 +124,8 @@ class Config:
     telegram_bot_token: str    # Telegram bot token (results output); empty = off
     telegram_chat_id: str      # legacy/bootstrap chat (owner); always a recipient
     database_url: str          # Postgres DSN; empty = JSON-file fallback
+    ban_max_wait_min: float    # how long a cycle may sit out a Binance IP
+                               # ban before giving up (see src/ratelimit.py)
     accounts: tuple[Account, ...]      # traders on the shared bot (slot-namespaced)
     telegram_whitelist: tuple[str, ...]  # @usernames allowed to /start-subscribe
 
@@ -190,6 +192,7 @@ config = Config(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
     telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
     database_url=os.getenv("DATABASE_URL", "").strip(),
+    ban_max_wait_min=float(os.getenv("BAN_MAX_WAIT_MIN", "50")),
     accounts=_build_accounts(),
     telegram_whitelist=tuple(
         u.strip().lstrip("@").lower()
