@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 
 import requests
 
+from . import net
+
 FAPI_URL = "https://fapi.binance.com"
 _TIMEOUT = 10
 PERIODS_PER_YEAR = 3 * 365  # funding every 8h
@@ -35,7 +37,7 @@ class FundingError(RuntimeError):
 
 def _get(path: str, params: dict | None = None):
     try:
-        resp = requests.get(f"{FAPI_URL}{path}", params=params, timeout=_TIMEOUT)
+        resp = net.get(f"{FAPI_URL}{path}", params=params, timeout=_TIMEOUT)
     except requests.RequestException as exc:
         raise FundingError(f"request to {path} failed: {exc}") from exc
     if resp.status_code != 200:

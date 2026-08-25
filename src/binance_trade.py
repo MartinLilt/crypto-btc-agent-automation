@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 
 import requests
 
-from . import ratelimit
+from . import net, ratelimit
 from .config import config
 
 _TIMEOUT = 10
@@ -63,8 +63,8 @@ def _signed(method: str, path: str, params: dict) -> dict:
     sig = hmac.new(api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
     url = f"{_base_url()}{path}?{qs}&signature={sig}"
     try:
-        r = requests.request(method, url, headers={"X-MBX-APIKEY": api_key},
-                             timeout=_TIMEOUT)
+        r = net.request(method, url, headers={"X-MBX-APIKEY": api_key},
+                        timeout=_TIMEOUT)
     except requests.RequestException as exc:
         raise TradeError(f"request {path} failed: {exc}") from exc
     # A ban must surface as BinanceBanned, never as a generic TradeError the
@@ -104,7 +104,7 @@ def free_quote() -> float:
 
 def _fetch_exchange_info(params: dict) -> dict:
     """GET /api/v3/exchangeInfo, surfacing a ban instead of blowing up on JSON."""
-    r = requests.get(f"{_base_url()}/api/v3/exchangeInfo",
+    r = net.get(f"{_base_url()}/api/v3/exchangeInfo",
                      params=params, timeout=_TIMEOUT)
     ratelimit.check("/api/v3/exchangeInfo", r.status_code, r.text, r.headers)
     if r.status_code != 200:

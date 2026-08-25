@@ -138,6 +138,72 @@ def test_the_furthest_deadline_wins():
         raise AssertionError("a 418 must raise BinanceBanned")
 
 
+def test_a_crowded_ip_is_yielded_to_but_never_costs_the_cycle():
+    """Measured in prod: the shared IP sat at 5890/6000 while our cycle costs
+    ~38. We wait for the minute to roll, but a missed take-profit costs real
+    money and a neighbour's noise must never skip the run."""
+    ratelimit._last_weight = 5890
+    slept, pinged = [], []
+    orig_sleep, orig_get = ratelimit.time.sleep, ratelimit.net.get
+
+    class _Resp:
+        status_code, text = 200, "{}"
+        headers = {"X-MBX-USED-WEIGHT-1M": "5900"}   # never drains
+
+    ratelimit.time.sleep = lambda s: slept.append(s)
+    ratelimit.net.get = lambda *a, **k: pinged.append(1) or _Resp()
+    try:
+        ratelimit._yield_to_a_crowded_ip()           # must RETURN, not raise
+        assert len(slept) == ratelimit._BACKOFF_TRIES, f"waited {len(slept)}x"
+        assert len(pinged) == ratelimit._BACKOFF_TRIES, "each wait re-checks"
+    finally:
+        ratelimit.time.sleep, ratelimit.net.get = orig_sleep, orig_get
+        ratelimit._last_weight = 0
+
+
+def test_a_quiet_ip_is_not_waited_on():
+    ratelimit._last_weight = 40                      # just our own cycle
+    slept = []
+    orig, ratelimit.time.sleep = ratelimit.time.sleep, lambda s: slept.append(s)
+    try:
+        ratelimit._yield_to_a_crowded_ip()
+        assert slept == [], "a quiet IP must cost no delay at all"
+    finally:
+        ratelimit.time.sleep = orig
+        ratelimit._last_weight = 0
+
+
+def test_last_weight_is_the_latest_reading_not_the_peak():
+    ratelimit._peak_weight = ratelimit._last_weight = 0
+    check("/api/v3/klines", 200, "[]", {"X-MBX-USED-WEIGHT-1M": "5900"})
+    check("/api/v3/klines", 200, "[]", {"X-MBX-USED-WEIGHT-1M": "60"})
+    assert ratelimit.last_weight() == 60, "the back-off decision needs the LATEST"
+    assert ratelimit.peak_weight() == 5900, "the report still shows the worst"
+    ratelimit._peak_weight = ratelimit._last_weight = 0
+
+
+def test_ban_patience_is_a_budget_for_the_whole_run_not_per_call():
+    """BAN_MAX_WAIT_MIN is sized against the 4h cron slot. Raised to 180 it only
+    stays safe if the allowance is spent ONCE: preflight sitting out one ban and
+    the cycle sitting out another must not add up to more than the cap."""
+    ratelimit._ban_sleep_total = 0.0
+    slept = []
+    orig, ratelimit.time.sleep = ratelimit.time.sleep, lambda s: slept.append(s)
+    try:
+        cap = 100 * 60
+        first = ratelimit.BinanceBanned(
+            "x", until_ms=int((time.time() + 80 * 60) * 1000), status=418)
+        assert ratelimit.wait_out(first, cap) is True, "80 min fits in 100"
+        second = ratelimit.BinanceBanned(
+            "x", until_ms=int((time.time() + 30 * 60) * 1000), status=418)
+        assert ratelimit.wait_out(second, cap) is False, \
+            "only ~20 min of the run's patience was left — must refuse, not sleep"
+        assert len(slept) == 1, "the refused ban must not have been slept through"
+    finally:
+        ratelimit.time.sleep = orig
+        ratelimit._ban_sleep_total = 0.0
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

@@ -21,8 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
-import requests
-
+from . import net
 from .config import STATE_DIR, config
 from .strategy import Signal
 
@@ -148,7 +147,7 @@ class LiveBroker:
         sig = hmac.new(config.api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
         url = f"{self.base_url}{path}?{qs}&signature={sig}"
         headers = {"X-MBX-APIKEY": config.api_key}
-        resp = requests.request(method, url, headers=headers, timeout=_TIMEOUT)
+        resp = net.request(method, url, headers=headers, timeout=_TIMEOUT)
         if resp.status_code != 200:
             raise BrokerError(f"{path} -> HTTP {resp.status_code}: {resp.text[:200]}")
         return resp.json()

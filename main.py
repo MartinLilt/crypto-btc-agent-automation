@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 import traceback
 
+from src import net
 from src.binance_api import get_candles
 from src.config import config
 from src.ratelimit import BinanceBanned, preflight, wait_out, weight_report
@@ -352,6 +353,9 @@ def run_account(account) -> tuple[str | None, str | None]:
     pressure = weight_report()
     if pressure:
         print(pressure)
+    egress = net.report()
+    if egress:
+        print(egress)
 
     # ── per-coin position detail (what each position is waiting for) ──────
     rows: list[tuple[str, str, str, str, str]] = []
@@ -450,17 +454,25 @@ def _recipients() -> list:
 def _ban_message(banned: BinanceBanned) -> str:
     """What the owner sees when Binance has shut the whole IP out.
 
-    Deliberately says it is NOT our traffic: one cycle spends ~30 request
-    weight per 4h (~110 before the exchangeInfo batching) against a 6000/min
-    budget, and the ban was already running before our first call. Railway's
-    static outbound IPs are shared with other customers, so it is a neighbour's
-    bot that gets the address banned."""
-    return ("<b>⛔ Binance: IP забанен</b>\n\n"
+    Which diagnosis is true depends on WHOSE address the cycle went out on, and
+    saying the wrong one sends the reader hunting in the wrong place. On the
+    shared Railway IP a ban is a neighbour's doing and there is nothing to fix
+    in our code. On our own dedicated egress that explanation is gone — one
+    cycle spends ~38 weight per 4h against a 6000/min budget, so a ban there
+    means either the traffic is not taking the proxy or the box is not ours
+    alone, and both are worth waking up for."""
+    head = ("<b>⛔ Binance: IP забанен</b>\n\n"
             f"<code>{banned.describe()}</code>\n\n"
-            "Цикл пропущен, состояние не тронуто — ни одна сделка не потеряна.\n"
-            "Это не наш трафик: мы тратим ~30 единиц веса раз в 4 часа при лимите "
-            "6000 в минуту. Статический IP на Railway общий с другими клиентами — "
-            "банят соседа, прилетает нам.")
+            "Цикл пропущен, состояние не тронуто — ни одна сделка не потеряна.\n")
+    if net.on_own_egress():
+        return head + ("‼️ И это <b>наш собственный</b> адрес, а не общий с соседями. "
+                       "Мы тратим ~38 единиц веса раз в 4 часа при лимите 6000 в "
+                       "минуту — забанить нас там нечем. Значит либо трафик идёт "
+                       "мимо прокси, либо IP коробки не выделенный. Надо смотреть.")
+    return head + ("Это не наш трафик: мы тратим ~38 единиц веса раз в 4 часа при "
+                   "лимите 6000 в минуту. Статический IP на Railway общий с другими "
+                   "клиентами — банят соседа, прилетает нам. Лечится своим egress "
+                   "(BINANCE_PROXY_URL), см. reference/Binance API policy.md.")
 
 
 def _failure_message(account, exc: Exception) -> str:

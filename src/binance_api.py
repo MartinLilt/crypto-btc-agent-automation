@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import ratelimit
+from . import net, ratelimit
 from .config import config
 
 # Public production API — market data is the same for everyone and needs no key.
@@ -32,7 +32,7 @@ class BinanceAPIError(RuntimeError):
 def _get(path: str, params: dict | None = None) -> object:
     url = f"{BASE_URL}{path}"
     try:
-        resp = requests.get(url, params=params, timeout=_TIMEOUT)
+        resp = net.get(url, params=params, timeout=_TIMEOUT)
     except requests.RequestException as exc:
         raise BinanceAPIError(f"request to {url} failed: {exc}") from exc
 

@@ -33,6 +33,8 @@ import time
 
 import requests
 
+from . import net
+
 # Weight-1 endpoint. The cheapest possible way to ask "is this IP allowed to
 # talk to Binance right now?" before spending real weight on the cycle.
 _PING_URL = "https://api.binance.com/api/v3/ping"
@@ -54,22 +56,38 @@ WEIGHT_LIMIT_1M = 6000
 # same shared Railway egress IP, and it is the early warning for the next ban.
 _FOREIGN_TRAFFIC_ALARM = 300
 
+# Measured in production 2026-08-24 08:21 UTC: the shared egress IP was sitting
+# at 5890/6000 while our whole cycle costs ~38. Firing into a bucket that full
+# is what earns the 429 — and the 429 is what earns the ban. Above this mark we
+# stand aside for a moment and let the rolling minute drain.
+_WEIGHT_BACKOFF_AT = 0.85
+_BACKOFF_WAIT = 20.0
+_BACKOFF_TRIES = 3
+
 _peak_weight = 0
+_last_weight = 0
+# Ban-sitting is budgeted for the WHOLE run, not per call. BAN_MAX_WAIT_MIN is
+# sized against the 4h cron slot, and a per-call cap silently allowed several
+# waits to stack: preflight sits out one ban, the cycle hits another, and the
+# run is still going when Railway wants to start the next slot — which it then
+# skips. One budget, spent once.
+_ban_sleep_total = 0.0
 
 
 def note(headers) -> None:
     """Record the IP's used weight from a response. Cheap, and the only way to
     see a neighbour filling the budget before Binance shuts the address down."""
-    global _peak_weight
+    global _peak_weight, _last_weight
     if not headers:
         return
     raw = headers.get("X-MBX-USED-WEIGHT-1M") or headers.get("x-mbx-used-weight-1m")
     if raw is None:
         return
     try:
-        _peak_weight = max(_peak_weight, int(raw))
+        _last_weight = int(raw)
     except (TypeError, ValueError):
-        pass
+        return
+    _peak_weight = max(_peak_weight, _last_weight)
 
 
 def peak_weight() -> int:
@@ -77,15 +95,30 @@ def peak_weight() -> int:
     return _peak_weight
 
 
+def last_weight() -> int:
+    """Most recent used-weight reading — what matters for deciding to hold off."""
+    return _last_weight
+
+
 def weight_report() -> str | None:
-    """One console line about IP pressure, or None when there is nothing to say."""
+    """One console line about IP pressure, or None when there is nothing to say.
+
+    This reading is also how we PROVE the dedicated egress is doing its job: on
+    an address that is only ours the peak can never be much above our own ~38,
+    because nobody else is spending. A high one there does not mean "a ban may
+    follow" — it means the traffic is not going where we think it is.
+    """
     if not _peak_weight:
         return None
     line = f"IP weight (1m)    : {_peak_weight}/{WEIGHT_LIMIT_1M} peak"
-    if _peak_weight >= _FOREIGN_TRAFFIC_ALARM:
-        line += ("  ‼️ far above our ~30 — foreign traffic on this shared "
-                 "egress IP, a ban may follow")
-    return line
+    if _peak_weight < _FOREIGN_TRAFFIC_ALARM:
+        return line
+    if net.on_own_egress():
+        return line + ("  ‼️ this is NOT our ~38 and the address is supposed to "
+                       "be ours alone — the proxy is not carrying the traffic, "
+                       "or its IP is not dedicated")
+    return line + ("  ‼️ far above our ~38 — foreign traffic on this shared "
+                   "egress IP, a ban may follow")
 
 
 class BinanceBanned(RuntimeError):
@@ -159,6 +192,7 @@ def wait_out(exc: BinanceBanned, max_wait_s: float) -> bool:
     outlasts our patience (or has no known end) and the run should bail out
     without sending another request.
     """
+    global _ban_sleep_total
     left = exc.seconds_left
     if left <= 0:
         # Expired between the answer and here, or a 429 with no deadline. Give
@@ -166,11 +200,13 @@ def wait_out(exc: BinanceBanned, max_wait_s: float) -> bool:
         if exc.until_ms is None:
             time.sleep(_WAKE_MARGIN)
         return True
-    if left > max_wait_s:
+    budget = max_wait_s - _ban_sleep_total
+    if left > budget:
         return False
     print(f"  ⏸ Binance ban: waiting {left / 60:.1f} min for it to lift "
-          f"(cap {max_wait_s / 60:.0f} min)")
+          f"({budget / 60:.0f} min of patience left this run)")
     time.sleep(left + _WAKE_MARGIN)
+    _ban_sleep_total += left + _WAKE_MARGIN
     return True
 
 
@@ -184,7 +220,7 @@ def preflight(max_wait_s: float) -> BinanceBanned | None:
     """
     for attempt in (1, 2):
         try:
-            r = requests.get(_PING_URL, timeout=_PING_TIMEOUT)
+            r = net.get(_PING_URL, timeout=_PING_TIMEOUT)
         except requests.RequestException as exc:
             # Network trouble is not a ban — let the cycle run and hit its own
             # retries, which know how to handle a blip.
@@ -197,5 +233,31 @@ def preflight(max_wait_s: float) -> BinanceBanned | None:
             if attempt == 2 or not wait_out(banned, max_wait_s):
                 return banned
             continue
+        _yield_to_a_crowded_ip()
         return None
     return None
+
+
+def _yield_to_a_crowded_ip() -> None:
+    """Hold off while the shared IP's minute is nearly spent.
+
+    Our ~38 weight is not what fills the bucket, but it can be the request that
+    tips it over — and the 429 that follows is what Binance turns into a ban.
+    Waiting lets the rolling minute drain. We NEVER skip the cycle over this:
+    a missed take-profit costs real money, a wasted 20 seconds does not.
+    """
+    ceiling = WEIGHT_LIMIT_1M * _WEIGHT_BACKOFF_AT
+    for attempt in range(1, _BACKOFF_TRIES + 1):
+        if last_weight() < ceiling:
+            return
+        print(f"  ⏸ shared IP at {last_weight()}/{WEIGHT_LIMIT_1M} — holding "
+              f"{_BACKOFF_WAIT:.0f}s for the minute to roll "
+              f"({attempt}/{_BACKOFF_TRIES})")
+        time.sleep(_BACKOFF_WAIT)
+        try:
+            r = net.get(_PING_URL, timeout=_PING_TIMEOUT)
+        except requests.RequestException:
+            return                      # network trouble — let the cycle decide
+        note(r.headers)
+    print(f"  ⚠ shared IP still at {last_weight()}/{WEIGHT_LIMIT_1M} — "
+          f"running anyway rather than losing the cycle")

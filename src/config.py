@@ -126,6 +126,10 @@ class Config:
     database_url: str          # Postgres DSN; empty = JSON-file fallback
     ban_max_wait_min: float    # how long a cycle may sit out a Binance IP
                                # ban before giving up (see src/ratelimit.py)
+    binance_proxy_url: str     # egress WE own for Binance traffic; empty =
+                               # straight out of the shared Railway IP, which
+                               # is what the 2026-08 bans came through (src/net.py)
+    binance_proxy_fallback: bool  # proxy unreachable -> go direct anyway
     accounts: tuple[Account, ...]      # traders on the shared bot (slot-namespaced)
     telegram_whitelist: tuple[str, ...]  # @usernames allowed to /start-subscribe
 
@@ -192,7 +196,9 @@ config = Config(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
     telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
     database_url=os.getenv("DATABASE_URL", "").strip(),
-    ban_max_wait_min=float(os.getenv("BAN_MAX_WAIT_MIN", "50")),
+    ban_max_wait_min=float(os.getenv("BAN_MAX_WAIT_MIN", "180")),
+    binance_proxy_url=os.getenv("BINANCE_PROXY_URL", "").strip(),
+    binance_proxy_fallback=_bool("BINANCE_PROXY_FALLBACK", True),
     accounts=_build_accounts(),
     telegram_whitelist=tuple(
         u.strip().lstrip("@").lower()
