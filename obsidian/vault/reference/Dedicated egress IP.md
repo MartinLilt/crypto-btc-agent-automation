@@ -18,6 +18,31 @@ banned IP address are blocked, affecting all accounts using that IP». Наш ц
 `data-api.binance.vision` проверен 24.08 и **не работает** — общий счётчик веса.
 Значит лечится только снаружи: свой адрес, на котором кроме нас никого.
 
+### Проверено 25.08 в живом интерфейсе, а не только по докам
+
+`grid-stream → Settings → Networking → Static Outbound IPs`: три адреса, у
+каждого в колонке **Type** стоит **Shared**, подсказка — «This IP may be shared
+with other customers». Это Railway про наши собственные адреса.
+
+Наши три (нужны для файрвола на шаге 3):
+
+```
+208.77.244.242
+152.55.184.240
+152.55.184.241
+```
+
+В полной таблице тарифов на railway.com/pricing раздел **Networking** (TCP
+proxy, HTTP proxy, DDoS, приватная сеть, IPv6) **не содержит строки про
+выделенный IP ни на одном тарифе, включая Enterprise**. Единственное
+«выделенное» у них — **Dedicated VMs**, и по их же таблице разблокировки это
+обязательство **$10 000/мес**. Вопрос закрыт: внутри Railway решения нет ни за
+какие разумные деньги.
+
+Там же подтвердилось, что **Hobby сохраняет «Global regions» и 50 cron-задач** —
+при понижении тарифа Amsterdam и расписание остаются, теряются ровно статические
+IP, которые после переезда не нужны.
+
 Итог по деньгам: Pro ($20) нужен нам **только** ради Static Outbound IPs. После
 переезда они не нужны → Hobby ($5) + коробка (~€4.4) ≈ **$9.8 против $20**.
 Потребление проверено 25.08: Postgres держит 0.038 GB RAM и 0.0003 vCPU ≈
@@ -92,8 +117,9 @@ FilterDefaultDeny Yes
 ^testnet\.binance\.vision$
 ```
 
-Три адреса Railway берутся в **Railway → сервис `grid-stream` → Settings →
-Networking → Static IPs**. Пароль — `openssl rand -base64 24`.
+Три адреса Railway — те, что выписаны выше (перепроверить в **Settings →
+Networking → Static IPs**, если сервис передеплоят в другой регион). Пароль —
+`openssl rand -base64 24`.
 
 Файрвол:
 
