@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the box tripwire every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=watchdog.service
+
+[Install]
+WantedBy=timers.target
