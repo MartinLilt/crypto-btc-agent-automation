@@ -1,0 +1,6 @@
+[Unit]
+Description=Nightly pg_dump of grid-stream state
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pg-backup

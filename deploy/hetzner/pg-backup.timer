@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the grid-stream pg_dump nightly
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+Unit=pg-backup.service
+
+[Install]
+WantedBy=timers.target

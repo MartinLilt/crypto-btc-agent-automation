@@ -1,0 +1,39 @@
+#cloud-config
+# Passed as user-data when the CAX11 is created. Everything here must be safe to
+# run before we know whether Binance even answers from this IP — no secrets, no
+# bot, just a box we can SSH into and probe.
+package_update: true
+package_upgrade: true
+packages:
+  - ufw
+  - unattended-upgrades
+  - git
+  - python3-venv
+  - python3-dev
+  - postgresql
+  - postgresql-client
+  - curl
+
+users:
+  - name: bot
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - SSH_PUBKEY_PLACEHOLDER
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-hardening.conf
+    content: |
+      PermitRootLogin prohibit-password
+      PasswordAuthentication no
+
+runcmd:
+  # Only SSH is exposed. Postgres stays on localhost and the bot makes outbound
+  # calls only, so there is nothing else to open — unlike the proxy plan, which
+  # needed 8443 for Railway.
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp
+  - ufw --force enable
+  - systemctl enable --now unattended-upgrades
+  - systemctl restart ssh

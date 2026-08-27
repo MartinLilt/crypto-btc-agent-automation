@@ -1,0 +1,21 @@
+[Unit]
+Description=grid-stream — one trading cycle over the basket
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bot
+WorkingDirectory=/opt/grid-stream
+EnvironmentFile=/etc/grid-stream.env
+ExecStart=/opt/grid-stream/.venv/bin/python main.py
+# Deliberately no Restart=: this mirrors Railway's restartPolicyType NEVER. A
+# cycle that died mid-way must not be replayed blindly — an order may already
+# have reached Binance. The next timer tick reloads state from Postgres and
+# picks up cleanly.
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
