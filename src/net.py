@@ -42,14 +42,23 @@ _session = requests.Session()
 
 
 def on_own_egress() -> bool:
-    """True when this cycle's Binance traffic is leaving through our own IP."""
+    """True when this cycle's Binance traffic is leaving through our own IP.
+
+    Two ways to be there: the bot runs ON the box we own (EGRESS_DEDICATED, no
+    hop at all), or it runs elsewhere and tunnels through that box's proxy.
+    """
+    if config.egress_dedicated and not config.binance_proxy_url:
+        return True
     return bool(config.binance_proxy_url) and not _proxy_down
 
 
 def _proxies() -> dict | None:
-    if not on_own_egress():
-        return None
+    # on_own_egress() is also true when the bot runs ON the dedicated box, where
+    # there is no proxy URL — handing requests an empty one would break every
+    # call, so the URL itself decides here.
     url = config.binance_proxy_url
+    if not url or _proxy_down:
+        return None
     return {"http": url, "https": url}
 
 
@@ -92,7 +101,9 @@ def get(url: str, **kw) -> requests.Response:
 def report() -> str | None:
     """One console/report line about which address the cycle went out on."""
     if not config.binance_proxy_url:
-        return ("Egress            : shared Railway IP — a neighbour's traffic "
+        if config.egress_dedicated:
+            return "Egress            : own dedicated IP ✅ (this host)"
+        return ("Egress            : shared IP — a neighbour's traffic "
                 "can still get us banned")
     if _proxy_down:
         tail = ("fell back to the shared Railway IP"

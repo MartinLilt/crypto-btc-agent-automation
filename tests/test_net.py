@@ -49,13 +49,14 @@ class _Recorder:
         return f"response for {method} {url}"
 
 
-def _arrange(recorder, *, proxy=PROXY, fallback=True):
+def _arrange(recorder, *, proxy=PROXY, fallback=True, dedicated=False):
     """Point net at a stub session and a chosen proxy config; returns a undo."""
     old_session, old_cfg = net._session, net.config
     old_down, old_err = net._proxy_down, net._proxy_error
     net._session = recorder
     net.config = replace(_real_config, binance_proxy_url=proxy,
-                         binance_proxy_fallback=fallback)
+                         binance_proxy_fallback=fallback,
+                         egress_dedicated=dedicated)
     net._proxy_down, net._proxy_error = False, None
 
     def undo():
@@ -83,6 +84,24 @@ def test_no_proxy_configured_is_exactly_the_old_direct_behaviour():
         net.get("https://api.binance.com/api/v3/ping")
         assert rec.calls == [None], "an empty proxy URL must not alter the call"
         assert net.on_own_egress() is False
+    finally:
+        undo()
+
+
+def test_running_on_our_own_box_needs_no_proxy_and_says_so():
+    """After the move off Railway the bot sits ON the dedicated address.
+
+    There is no hop to make and nothing to fall back to, so the call must go out
+    plain — but the report must NOT keep calling the address shared, because
+    that line is the only proof we read after every cycle.
+    """
+    rec = _Recorder()
+    undo = _arrange(rec, proxy="", dedicated=True)
+    try:
+        net.get("https://api.binance.com/api/v3/ping")
+        assert rec.calls == [None], f"no proxy should be used: {rec.calls}"
+        assert net.on_own_egress() is True
+        assert "own dedicated IP" in net.report(), net.report()
     finally:
         undo()
 

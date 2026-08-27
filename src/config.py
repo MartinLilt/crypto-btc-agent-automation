@@ -130,6 +130,9 @@ class Config:
                                # straight out of the shared Railway IP, which
                                # is what the 2026-08 bans came through (src/net.py)
     binance_proxy_fallback: bool  # proxy unreachable -> go direct anyway
+    egress_dedicated: bool     # this host's OWN address is ours alone (the bot
+                               # runs on our box, so there is no proxy to hop
+                               # through and nothing to fall back to)
     accounts: tuple[Account, ...]      # traders on the shared bot (slot-namespaced)
     telegram_whitelist: tuple[str, ...]  # @usernames allowed to /start-subscribe
 
@@ -199,6 +202,7 @@ config = Config(
     ban_max_wait_min=float(os.getenv("BAN_MAX_WAIT_MIN", "180")),
     binance_proxy_url=os.getenv("BINANCE_PROXY_URL", "").strip(),
     binance_proxy_fallback=_bool("BINANCE_PROXY_FALLBACK", True),
+    egress_dedicated=_bool("EGRESS_DEDICATED", False),
     accounts=_build_accounts(),
     telegram_whitelist=tuple(
         u.strip().lstrip("@").lower()
