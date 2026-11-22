@@ -602,6 +602,22 @@ def main() -> None:
         # Telegram; keeping the schedule alive matters more than a red badge.
         print(f"‼️ {failed}/{len(to_run)} account cycle(s) failed — "
               f"schedule kept alive, next run in 4h")
+    else:
+        _mark_ok()
+
+
+def _mark_ok() -> None:
+    """Heartbeat: every account finished its cycle. The box watchdog alarms when
+    this file goes stale (deploy/server/watchdog.sh), which is the only way to
+    hear about a cycle that never started, or one that died before it could
+    send its own Telegram message."""
+    try:
+        from datetime import datetime, timezone
+        from src.config import STATE_DIR
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (STATE_DIR / "last_ok").write_text(datetime.now(timezone.utc).isoformat() + "\n")
+    except Exception as exc:
+        print(f"⚠ heartbeat not written: {type(exc).__name__}: {str(exc)[:80]}")
 
 
 if __name__ == "__main__":

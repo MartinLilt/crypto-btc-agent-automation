@@ -2,6 +2,8 @@
 Description=grid-stream — one trading cycle over the basket
 After=network-online.target postgresql.service
 Wants=network-online.target
+# A hard failure (crash, OOM, timeout) pings the owner in Telegram.
+OnFailure=grid-alert@%n.service
 
 [Service]
 Type=oneshot

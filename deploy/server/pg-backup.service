@@ -1,5 +1,7 @@
 [Unit]
 Description=Nightly pg_dump of grid-stream state
+# A hard failure (crash, OOM, timeout) pings the owner in Telegram.
+OnFailure=grid-alert@%n.service
 
 [Service]
 Type=oneshot

@@ -1,0 +1,6 @@
+[Unit]
+Description=Telegram alert: %i failed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/grid-unit-failed %i

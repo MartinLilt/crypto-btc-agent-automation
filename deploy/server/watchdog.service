@@ -1,5 +1,7 @@
 [Unit]
 Description=grid-stream box tripwire (miner / stray service check)
+# A hard failure (crash, OOM, timeout) pings the owner in Telegram.
+OnFailure=grid-alert@%n.service
 
 [Service]
 Type=oneshot

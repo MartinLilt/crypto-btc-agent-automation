@@ -68,6 +68,8 @@ install -m 644 "$SRC/watchdog.service"    /etc/systemd/system/
 install -m 644 "$SRC/watchdog.timer"      /etc/systemd/system/
 install -m 755 "$SRC/pg-backup.sh"        /usr/local/bin/pg-backup
 install -m 755 "$SRC/watchdog.sh"         /usr/local/bin/grid-watchdog
+install -m 644 "$SRC/grid-alert@.service" /etc/systemd/system/
+install -m 755 "$SRC/unit-failed.sh"      /usr/local/bin/grid-unit-failed
 systemctl daemon-reload
 
 # The trading timer is NOT enabled here on purpose. Enabling it starts trading;
