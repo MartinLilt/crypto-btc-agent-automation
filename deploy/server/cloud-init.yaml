@@ -1,0 +1,84 @@
+#cloud-config
+# Passed as user-data when the box is created. No secrets and no bot here: just a
+# locked-down host we can SSH into. setup.sh does the rest.
+#
+# Rebuilt 2026-10-03 after Hetzner blocked the first box's IPs. What changed vs
+# the first box, and why:
+#   - admin login (ops) and the bot's runtime user (grid, created by setup.sh)
+#     are separate. The first box ran the bot as `bot` with NOPASSWD sudo, so any
+#     hole in the bot was root.
+#   - outbound traffic is deny-by-default. An IP block is what Hetzner does when
+#     a box attacks or scans others; with egress limited to DNS/NTP/HTTP(S), a
+#     compromised process cannot scan or brute-force anyone over other ports.
+#   - inbound 22 is also limited to the owner's IP by the provider's cloud
+#     firewall (DigitalOcean since 2026-10-09); ufw here is the second layer.
+#   - fail2ban is actually installed (the watchdog checks for it).
+package_update: true
+package_upgrade: true
+packages:
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+  - git
+  - python3-venv
+  - curl
+  - ca-certificates
+  - gnupg
+  - postgresql-common
+
+disable_root: true
+ssh_pwauth: false
+
+users:
+  - name: ops
+    shell: /bin/bash
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - SSH_PUBKEY_PLACEHOLDER
+
+write_files:
+  # 00- sorts before Ubuntu's 50-cloud-init.conf, and sshd keeps the first value
+  # it reads, so these win.
+  - path: /etc/ssh/sshd_config.d/00-hardening.conf
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      AuthenticationMethods publickey
+      AllowUsers ops
+      MaxAuthTries 3
+      LoginGraceTime 20
+      X11Forwarding no
+      AllowAgentForwarding no
+      PermitTunnel no
+      AllowTcpForwarding no
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+  - path: /etc/fail2ban/jail.d/sshd.local
+    content: |
+      [sshd]
+      enabled = true
+      backend = systemd
+      maxretry = 3
+      findtime = 10m
+      bantime = 24h
+  # Security patches reboot the box when they need to. 02:30 UTC falls between the
+  # 00:00 and 04:00 cycles.
+  - path: /etc/apt/apt.conf.d/52unattended-local
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "02:30";
+
+runcmd:
+  - ufw default deny incoming
+  - ufw default deny outgoing
+  - ufw allow in 22/tcp
+  - ufw allow out 53
+  - ufw allow out 123/udp
+  - ufw allow out 80/tcp
+  - ufw allow out 443/tcp
+  - ufw --force enable
+  - systemctl enable --now fail2ban unattended-upgrades
+  - systemctl restart ssh

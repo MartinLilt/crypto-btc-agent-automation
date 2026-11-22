@@ -38,7 +38,7 @@ if [ -n "$STRANGERS" ]; then
   for ip in $STRANGERS; do
     host=$(getent hosts "$ip" | awk '{print $2}')
     case "$host" in
-      *binance*|*telegram*|*t.me*|*ubuntu.com*|*hetzner*|*postgresql.org*|*github*) ;;
+      *binance*|*telegram*|*t.me*|*ubuntu.com*|*digitalocean*|*postgresql.org*|*github*) ;;
       *) RESOLVED="$RESOLVED $ip(${host:-unknown})" ;;
     esac
   done

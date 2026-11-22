@@ -1,0 +1,52 @@
+[Unit]
+Description=grid-stream — one trading cycle over the basket
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=grid
+Group=grid
+WorkingDirectory=/opt/grid-stream
+EnvironmentFile=/etc/grid-stream.env
+# The code is read-only to grid; the only writable place is its state dir (the
+# JSON fallback when Postgres is unset). No bytecode cache in /opt.
+StateDirectory=grid-stream
+Environment=STATE_DIR=/var/lib/grid-stream PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/grid-stream/.venv/bin/python main.py
+# Deliberately no Restart=: this mirrors Railway's restartPolicyType NEVER. A
+# cycle that died mid-way must not be replayed blindly — an order may already
+# have reached Binance. The next timer tick reloads state from Postgres and
+# picks up cleanly.
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+
+# Sandbox. The bot needs outbound TCP and the local Postgres socket, nothing
+# else; if it is ever exploited, this is what the attacker gets.
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target
