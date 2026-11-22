@@ -15,12 +15,14 @@ import time
 import traceback
 
 from src import net
-from src.binance_api import get_candles
+from src.binance_api import get_candles, get_prices
 from src.config import config
 from src.ratelimit import BinanceBanned, preflight, wait_out, weight_report
 from dataclasses import replace
 
 from src.grid import effective_unit, is_uptrend, params_from_config, plan_actions
+from src.performance import (Performance, apply_flow, bench_value, console_lines,
+                             report_lines)
 from src.grid_broker import get_grid_broker
 from src import notify
 from src.subscribers import get_subscribers
@@ -167,6 +169,52 @@ def _sells_message(sells: list[dict], quote: str) -> str | None:
             f"<pre>{table}</pre>")
 
 
+def _flow_threshold(capital_base: float) -> float:
+    """Balance change between cycles that counts as a deposit/withdrawal rather
+    than fee/dust noise."""
+    return max(1.0, 0.005 * capital_base)
+
+
+def _sync_performance(broker, universe: list[str], errors: list[str]) -> dict | None:
+    """Book this cycle's deposit/withdrawal into the performance ledger, or seed an
+    account that was never tracked. Returns {net_deposits, n_flows, bench}.
+
+    Must run BEFORE the first broker.save(): the flow is measured against the
+    cash stored last cycle, and the first save overwrites that, so a flow not
+    booked here is gone. record_flow() commits the new cash in the same
+    transaction, so a crash right after cannot book the same deposit twice.
+
+    Never raises: a bug here must not stop trading. A failure is reported in
+    the cycle's errors with the amount, so it can be added by hand
+    (tools/perf_seed.py --append).
+    """
+    store = broker.store
+    flow = broker.external_flow
+    try:
+        st = store.load_perf()
+        if st is not None and abs(flow) <= _flow_threshold(broker.capital_base):
+            return st
+        prices = _retry(lambda: get_prices(universe), "prices (performance)")
+        if st is None:
+            # Never tracked (a new account, paper): treat what is there now as
+            # the first deposit. Its stored cash may be the paper default, so
+            # this cycle's "flow" is meaningless and is swallowed by the seed.
+            amount, source, note = broker.equity(prices), "seed", "equity at first tracked cycle"
+            bench = apply_flow({}, amount, prices, universe)
+        else:
+            amount, source = flow, "auto"
+            note = "deposit" if flow > 0 else "withdrawal"
+            bench = apply_flow(st["bench"], flow, prices, universe)
+        store.record_flow(amount, source, note, bench, cash=broker.cash)
+        print(f"performance       : booked {source} {amount:+.2f} ({note})")
+        return store.load_perf()
+    except Exception as exc:
+        print(f"  ⚠ performance ledger: {type(exc).__name__}: {exc}")
+        errors.append(f"📒 учёт пополнений не записан ({type(exc).__name__}); "
+                      f"движение {flow:+.2f} — внести вручную: tools/perf_seed.py --append")
+        return None
+
+
 def run_account(account) -> tuple[str | None, str | None]:
     """One trading cycle for ONE account. Trades its Binance account, prints the
     console report, and RETURNS (main_message, history_message) for Telegram —
@@ -208,13 +256,15 @@ def run_account(account) -> tuple[str | None, str | None]:
               f"{broker.capital_base:.2f} → unit {unit:.2f} "
               f"(floor {config.grid_min_unit:.2f})")
 
+    actions: list[str] = []
+    errors: list[str] = []          # order failures / reconcile drift (own section)
+    perf_state = _sync_performance(broker, universe, errors)
+
     prices: dict[str, float] = {}
     # Enough 4h candles for the grid SMA AND the higher-TF regime (resampled).
     factor = tf_factor(config.interval, config.regime_interval)
     regime_bars = (config.regime_ma + config.regime_slope_lookback + 5) * factor
     limit = max(p.sma_win + 60, regime_bars)
-    actions: list[str] = []
-    errors: list[str] = []          # order failures / reconcile drift (own section)
     regimes: dict[str, Regime] = {}
 
     for coin in universe:
@@ -329,7 +379,7 @@ def run_account(account) -> tuple[str | None, str | None]:
     # deposit/withdrawal since last cycle (live) — ignore fee/dust noise
     flow = broker.external_flow
     flow_line = None
-    if abs(flow) > max(1.0, 0.005 * start):
+    if abs(flow) > _flow_threshold(start):
         flow_line = (f"💰 Пополнение: +{flow:.2f} {config.quote_asset}" if flow > 0
                      else f"🏧 Вывод: {flow:.2f} {config.quote_asset}")
     print("\n" + "-" * 60)
@@ -339,8 +389,19 @@ def run_account(account) -> tuple[str | None, str | None]:
     print(f"open bags         : {broker.total_bags} across {n_coins} coins")
     print(f"bull holds        : {n_holds} ({', '.join(broker.holds) or '—'})")
     print(f"realized stream   : {broker.realized:>+10.2f} {config.quote_asset}")
-    print(f"equity (MTM)      : {equity:>10.2f} {config.quote_asset}  ({(equity/start-1)*100:+.2f}%)")
-    print(f"feast (bags recover): {feast:>8.2f} {config.quote_asset}  ({(feast/start-1)*100:+.2f}%)")
+    # Percentages are against the money actually put in. The old base
+    # (cash + cost of open positions) moved on every sale; it is kept only for
+    # bag sizing. Without a performance ledger we fall back to it, labelled.
+    perf = None
+    if perf_state is not None:
+        perf = Performance(perf_state["net_deposits"], equity,
+                           bench_value(perf_state["bench"], prices))
+    base = perf.net_deposits if perf and perf.net_deposits > 0 else start
+    print(f"equity (MTM)      : {equity:>10.2f} {config.quote_asset}")
+    print(f"feast (bags recover): {feast:>8.2f} {config.quote_asset}  ({(feast/base-1)*100:+.2f}%)")
+    if perf:
+        for line in console_lines(perf, config.quote_asset):
+            print(line)
     print(f"est. tax liability: {est_tax:>10.2f} {config.quote_asset}  (on realised only, paid yearly)")
 
     reg_line = " · ".join(
@@ -380,8 +441,7 @@ def run_account(account) -> tuple[str | None, str | None]:
     print("positions:\n" + pos_table)
 
     # ── build Telegram messages (caller sends them to all subscribers) ────
-    equity_pct = (equity / start - 1) * 100
-    feast_pct = (feast / start - 1) * 100
+    feast_pct = (feast / base - 1) * 100
     invested = equity - broker.cash          # value sitting inside open positions
     # plain-language verdict on the banked profit — the bottom-line number
     verdict = ("✅ в плюсе" if broker.realized > 0
@@ -393,8 +453,10 @@ def run_account(account) -> tuple[str | None, str | None]:
     lines = [
         f"{header} · {config.trading_mode.upper()} · {config.interval}",
         "",
-        f"💰 Всего на счету: <b>{equity:.0f}</b> {config.quote_asset} ({equity_pct:+.1f}%)",
+        f"💰 Всего на счету: <b>{equity:.2f}</b> {config.quote_asset}",
         f"     свободно {broker.cash:.0f} · в закупках {invested:.0f}",
+        *(report_lines(perf, universe, config.quote_asset) if perf
+          else ["<i>💼 учёт пополнений недоступен — % не показан</i>"]),
         f"💵 Заработано всего: <b>{broker.realized:+.2f}</b> {config.quote_asset} — {verdict}",
         f"🎯 Если все закупки отработают: {feast:.0f} ({feast_pct:+.1f}%)",
         *([f"<b>{flow_line}</b>"] if flow_line else []),

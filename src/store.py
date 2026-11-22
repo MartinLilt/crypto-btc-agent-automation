@@ -10,11 +10,18 @@ Interface both backends implement:
     save(cash, realized, positions, holds)
     log_trade(**row)   row = symbol, side, kind, price, qty, usdt, pnl
     recent_sells(limit) -> [ {ts, symbol, kind, price, qty, usdt, pnl}, … ]  newest-first
+    load_perf()   -> {net_deposits, n_flows, bench} | None   (None = never seeded)
+    record_flow(amount, source, note, bench, cash=None, ts=None)
+        one deposit/withdrawal + the benchmark after it; with `cash` it also
+        commits the ledger cash in the SAME transaction (Postgres), so a crash
+        can never make the next cycle count the same deposit twice.
 """
 
 from __future__ import annotations
 
 import json
+
+from datetime import datetime, timezone
 
 from .config import STATE_DIR, config
 
@@ -65,6 +72,37 @@ class JsonStore:
                  if l.strip() and json.loads(l).get("side") == "SELL"]
         return list(reversed(sells[-limit:]))
 
+    # ── performance (deposits + benchmark) ───────────────────────────────
+    @property
+    def _perf_file(self):
+        sfx = "" if self.account_id == 1 else f"_{self.account_id}"
+        return STATE_DIR / f"perf{sfx}.json"
+
+    def load_perf(self) -> dict | None:
+        if not self._perf_file.exists():
+            return None
+        d = json.loads(self._perf_file.read_text())
+        flows = d.get("flows", [])
+        if not flows:
+            return None
+        return {"net_deposits": sum(f["amount"] for f in flows),
+                "n_flows": len(flows), "bench": d.get("bench", {})}
+
+    def record_flow(self, amount, source, note, bench, cash=None, ts=None) -> None:
+        STATE_DIR.mkdir(exist_ok=True)
+        d = (json.loads(self._perf_file.read_text())
+             if self._perf_file.exists() else {"flows": [], "bench": {}})
+        d["flows"].append({"ts": (ts or datetime.now(timezone.utc)).isoformat(),
+                           "amount": amount, "source": source, "note": note})
+        d["bench"] = bench
+        tmp = self._perf_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(d, indent=2))
+        tmp.replace(self._perf_file)
+        if cash is not None:
+            s = self.load()
+            self.save(cash, s["realized"], s["positions"], s["holds"])
+
+
 
 class PostgresStore:
     backend = "postgres"
@@ -91,6 +129,17 @@ class PostgresStore:
             # keys by id, which we reuse as the account slot — no PK surgery.
             cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS account_id INT;")
             cur.execute("UPDATE trades SET account_id = 1 WHERE account_id IS NULL;")
+            # Performance: every deposit/withdrawal, and the buy-&-hold benchmark
+            # bought with exactly those flows (src/performance.py).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS flows (
+                    id BIGSERIAL PRIMARY KEY, ts TIMESTAMPTZ DEFAULT now(),
+                    account_id INT NOT NULL, amount DOUBLE PRECISION NOT NULL,
+                    source TEXT NOT NULL, note TEXT);""")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS perf (
+                    account_id INT PRIMARY KEY, bench JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ DEFAULT now());""")
 
     def load(self) -> dict:
         with self.conn.cursor() as cur:
@@ -131,6 +180,33 @@ class PostgresStore:
                 FROM trades WHERE side='SELL' AND account_id=%s
                 ORDER BY ts DESC LIMIT %s;""", (self.account_id, limit))
             return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def load_perf(self) -> dict | None:
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT coalesce(sum(amount), 0), count(*) FROM flows "
+                        "WHERE account_id=%s;", (self.account_id,))
+            total, n = cur.fetchone()
+            if not n:
+                return None
+            cur.execute("SELECT bench FROM perf WHERE account_id=%s;", (self.account_id,))
+            r = cur.fetchone()
+        return {"net_deposits": total, "n_flows": n, "bench": (r[0] if r else {}) or {}}
+
+    def record_flow(self, amount, source, note, bench, cash=None, ts=None) -> None:
+        from psycopg.types.json import Json
+        with self.conn.transaction(), self.conn.cursor() as cur:
+            cur.execute("""INSERT INTO flows (ts, account_id, amount, source, note)
+                           VALUES (coalesce(%s, now()), %s, %s, %s, %s);""",
+                        (ts, self.account_id, amount, source, note))
+            cur.execute("""INSERT INTO perf (account_id, bench, updated_at)
+                           VALUES (%s, %s, now())
+                           ON CONFLICT (account_id) DO UPDATE SET
+                               bench=EXCLUDED.bench, updated_at=now();""",
+                        (self.account_id, Json(bench)))
+            if cash is not None:
+                cur.execute("UPDATE portfolio SET cash=%s, updated_at=now() WHERE id=%s;",
+                            (cash, self.account_id))
+
 
 
 def get_store(account_id: int = 1):

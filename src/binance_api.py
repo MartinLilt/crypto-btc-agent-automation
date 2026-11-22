@@ -78,6 +78,14 @@ def get_price(symbol: str | None = None) -> float:
     return float(data["price"])
 
 
+def get_prices(symbols: list[str]) -> dict[str, float]:
+    """Latest prices for several symbols in ONE request (weight 4 for any list)."""
+    import json
+    data = _get("/api/v3/ticker/price",
+                {"symbols": json.dumps(list(symbols), separators=(",", ":"))})
+    return {d["symbol"]: float(d["price"]) for d in data}
+
+
 def get_candles(
     symbol: str | None = None,
     interval: str | None = None,
