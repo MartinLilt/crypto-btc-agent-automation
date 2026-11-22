@@ -194,3 +194,28 @@ equity % is vs cash+cost, not vs deposits, so it jumps on every sale; watchdog w
 intrusion only — nothing alerts if the box or the cycle dies; no offsite backup; DO cost
 ($6/mo) is about the same as realized income at this size. Candidate work listed in chat;
 nothing changed live.
+
+## 2026-11-22 — Plan A shipped: honest report, cycle alerts, offsite backup
+
+Plan + evidence: `plans/2026-11-22 Plan A.md`. Trading logic untouched (diff of grid/regime/
+broker/trade modules since c775e9a is empty).
+- **Repo hygiene:** the 10-09 leftovers committed. The repo is PUBLIC, so IPs, chat ids and
+  invoice/ticket numbers in notes became placeholders; real values in gitignored `private/ops.md`.
+- **A1 report:** `flows` + `perf` tables, `src/performance.py`. The headline is now result vs net
+  deposits and vs an equal-weight basket bought with the same flows (no extra API calls). Flows
+  are booked before the cycle's first save, atomically with the new cash. History seeded with
+  `tools/perf_seed.py`: deposits 126.7206 (first 41.2406 derived from the ledger). Hold-the-basket
+  101.69 vs bot 118.92 at 09:00 (the audit's 102.33 used daily closes). Tested: 17 unit tests,
+  paper cycle on a DB clone, live-broker auto-booking on the clone with orders blocked.
+- **A2 alerts:** heartbeat `last_ok` + watchdog check (stale > 4h45m, once then daily, recovery
+  notice, dedup reset on clear); `OnFailure=grid-alert@%n` on all units. Both fired for real.
+  No outside check (declined), so a fully dead box stays silent.
+- **A3 backup:** nightly dump age-encrypted to the owner's key, sent to Telegram; upload failure
+  keeps the local copy and fails the unit. Restore drill (`tools/restore_check.sh`, Postgres 18 in
+  Docker) matched live exactly. `reference/Restore.md`.
+- **A4 Earn:** USDC flexible is available to this account (~4.3% on the first 5000), the current
+  key permission suffices; not built: ~$3/yr at today's idle cash; revisit at ≥ ~$1000 idle.
+  Unconfirmed news: Binance EEA service cuts since 2026-07-01, possible EU account closures by
+  2026-12-31; ours still trades. Owner to check Binance notices.
+Open: first live cycle 12:00 UTC with the new report; 3 clean cycles; owner confirms the test
+alerts arrived, the DO card auto-charge, and a password-manager copy of the age key.

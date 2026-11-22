@@ -50,6 +50,25 @@ The project has its **own** local vault at `obsidian/vault/`.
 
 Add a Dev Log entry whenever the project changes.
 
+## Server ops (DigitalOcean box)
+
+SSH login and IP: `obsidian/vault/private/ops.md`. The bot runs as `grid` from
+`/opt/grid-stream` (root-owned, read-only to the bot).
+
+- **Deploy code:** `sudo git -C /opt/grid-stream -c safe.directory=/opt/grid-stream pull --ff-only`
+  between cycles (`systemctl is-active grid-stream.service` must be inactive). Changed
+  units/scripts in `deploy/server/` are installed by hand as `setup.sh` does, then
+  `systemctl daemon-reload`.
+- **Test before live:** clone the DB (`pg_dump grid | psql grid_<name>`), run a paper cycle
+  against it with Telegram muted. Never run paper on the real DB (shared ledger).
+- **Report math:** `flows` + `perf` tables (src/performance.py). History before 2026-11-22 was
+  seeded with `tools/perf_seed.py`; a flow the bot failed to book is added with `--append`.
+- **Alerts:** watchdog (15 min) = intrusion checks + heartbeat `/var/lib/grid-stream/last_ok`
+  older than 4h45m; `OnFailure=grid-alert@%n` on all units. Nothing alerts if the whole box
+  is down (an outside check was declined 2026-11-22).
+- **Backup:** nightly dump, kept 14 on the box, plus an age-encrypted copy sent to the owner's
+  Telegram. Restore drill: `tools/restore_check.sh` (`obsidian/vault/reference/Restore.md`).
+
 ## Note on the two vaults
 
 There is also a separate global Obsidian vault on this machine synced over MCP —
