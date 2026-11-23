@@ -15,6 +15,7 @@ Interface both backends implement:
         one deposit/withdrawal + the benchmark after it; with `cash` it also
         commits the ledger cash in the SAME transaction (Postgres), so a crash
         can never make the next cycle count the same deposit twice.
+    log_shadow(rows)  plan S: what the shadow ideas said this cycle (never traded)
 """
 
 from __future__ import annotations
@@ -88,6 +89,14 @@ class JsonStore:
         return {"net_deposits": sum(f["amount"] for f in flows),
                 "n_flows": len(flows), "bench": d.get("bench", {})}
 
+    def log_shadow(self, rows) -> None:
+        sfx = "" if self.account_id == 1 else f"_{self.account_id}"
+        STATE_DIR.mkdir(exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat()
+        with (STATE_DIR / f"shadow{sfx}.jsonl").open("a") as f:
+            for r in rows:
+                f.write(json.dumps({"ts": ts, **r}) + "\n")
+
     def record_flow(self, amount, source, note, bench, cash=None, ts=None) -> None:
         STATE_DIR.mkdir(exist_ok=True)
         d = (json.loads(self._perf_file.read_text())
@@ -140,6 +149,13 @@ class PostgresStore:
                 CREATE TABLE IF NOT EXISTS perf (
                     account_id INT PRIMARY KEY, bench JSONB NOT NULL,
                     updated_at TIMESTAMPTZ DEFAULT now());""")
+            # Plan S: shadow ideas, logged every cycle, never traded on.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS shadow_log (
+                    id BIGSERIAL PRIMARY KEY, ts TIMESTAMPTZ DEFAULT now(),
+                    account_id INT NOT NULL, symbol TEXT NOT NULL,
+                    live_regime TEXT, daily_regime TEXT, funding DOUBLE PRECISION,
+                    hold_gate BOOLEAN, bag_gate BOOLEAN, action TEXT);""")
 
     def load(self) -> dict:
         with self.conn.cursor() as cur:
@@ -191,6 +207,16 @@ class PostgresStore:
             cur.execute("SELECT bench FROM perf WHERE account_id=%s;", (self.account_id,))
             r = cur.fetchone()
         return {"net_deposits": total, "n_flows": n, "bench": (r[0] if r else {}) or {}}
+
+    def log_shadow(self, rows) -> None:
+        with self.conn.transaction(), self.conn.cursor() as cur:
+            for r in rows:
+                cur.execute("""INSERT INTO shadow_log (account_id, symbol, live_regime,
+                                   daily_regime, funding, hold_gate, bag_gate, action)
+                               VALUES (%(account_id)s, %(symbol)s, %(live_regime)s,
+                                       %(daily_regime)s, %(funding)s, %(hold_gate)s,
+                                       %(bag_gate)s, %(action)s);""",
+                            {**r, "account_id": self.account_id})
 
     def record_flow(self, amount, source, note, bench, cash=None, ts=None) -> None:
         from psycopg.types.json import Json

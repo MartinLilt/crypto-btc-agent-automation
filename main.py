@@ -25,6 +25,7 @@ from src.performance import (Performance, apply_flow, bench_value, console_lines
                              report_lines)
 from src.grid_broker import get_grid_broker
 from src import notify
+from src import shadow
 from src.subscribers import get_subscribers
 from src.regime import Regime, detect_regime, resample, tf_factor
 from src.universe import get_universe
@@ -266,6 +267,8 @@ def run_account(account) -> tuple[str | None, str | None]:
     regime_bars = (config.regime_ma + config.regime_slope_lookback + 5) * factor
     limit = max(p.sma_win + 60, regime_bars)
     regimes: dict[str, Regime] = {}
+    candles_by: dict[str, list] = {}  # plan S: the shadow reuses these, no refetch
+    notes: dict[str, str] = {}
 
     for coin in universe:
         try:
@@ -286,6 +289,7 @@ def run_account(account) -> tuple[str | None, str | None]:
         # market regime for this coin, measured on the higher timeframe
         regime = detect_regime(resample(candles, factor)).regime
         regimes[coin] = regime
+        candles_by[coin] = candles
         c = coin.replace(config.quote_asset, "")
         note = ""
 
@@ -349,6 +353,8 @@ def run_account(account) -> tuple[str | None, str | None]:
             print(f"  ⚠ {coin} ORDER FAILED — {type(exc).__name__}: {exc}")
             errors.append(f"❌ {c}: {str(exc)[:90]}")
 
+        notes[coin] = note.strip()
+
         # Persist per coin: the ledger is only in memory until this call, so a
         # crash mid-loop used to leave orders that Binance executed and our
         # state never recorded (a phantom bag). Now each coin is committed as
@@ -361,6 +367,12 @@ def run_account(account) -> tuple[str | None, str | None]:
               f"hold {hv:>7.2f}  value {broker.coin_value(coin, price):>8.2f}{note}")
 
     broker.save()
+
+    # Plan S: what two untested ideas would have said. Runs after every order
+    # of the cycle, reads only what the loop already has (plus 1 funding call
+    # per coin), and cannot raise into the cycle.
+    shadow_con, shadow_tg = shadow.run(broker.store, list(regimes), candles_by, regimes,
+                                       notes, config.quote_asset)
 
     # live safety: warn if the exchange balances drift from our ledger
     if hasattr(broker, "reconcile"):
@@ -417,6 +429,8 @@ def run_account(account) -> tuple[str | None, str | None]:
     egress = net.report()
     if egress:
         print(egress)
+    for line in shadow_con:
+        print(line)
 
     # ── per-coin position detail (what each position is waiting for) ──────
     rows: list[tuple[str, str, str, str, str]] = []
@@ -470,6 +484,7 @@ def run_account(account) -> tuple[str | None, str | None]:
         "",
         "<b>⚡️ Действия за цикл:</b>",
         *(actions or ["<i>— без сделок в этом цикле —</i>"]),
+        *(["", *shadow_tg] if shadow_tg else []),
     ]
     if errors:
         lines += ["", "<b>⚠️ Ошибки за цикл:</b>", *errors]
