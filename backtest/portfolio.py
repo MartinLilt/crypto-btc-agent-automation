@@ -173,6 +173,8 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
     locked = {c: False for c in coins}
     r_grid = r_hold = 0.0
     n_grid = n_hold = 0
+    n_bull_bank = 0; r_bull_bank = 0.0          # B1 mechanism: bags banked in BULL
+    hold_loss_n = 0; hold_loss_sum = 0.0        # B2 mechanism: rides closed in the red
     hold_bars = []
     dep_grid = dep_hold = 0.0        # Σ over bars of cost deployed per sleeve
     frozen = 0.0
@@ -209,6 +211,7 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                     if price >= b["entry"] * (1 + tp_pct / 100):
                         proceeds = b["qty"] * price * (1 - FEE)
                         cash += proceeds; r_grid += proceeds - b["cost"]; n_grid += 1
+                        n_bull_bank += 1; r_bull_bank += proceeds - b["cost"]
                         log(i, c, "SELL", "bag")
                     else:
                         keep.append(b)
@@ -253,6 +256,8 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                 h = holds[c]
                 proceeds = h["qty"] * price * (1 - FEE)
                 cash += proceeds; r_hold += proceeds - h["cost"]
+                if proceeds < h["cost"]:
+                    hold_loss_n += 1; hold_loss_sum += proceeds - h["cost"]
                 n_hold += 1; hold_bars.append(i - h["i"]); holds[c] = None
                 log(i, c, "SELL", "hold")
 
@@ -317,7 +322,9 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                 frozen=frozen / bars / start * 100, n_grid=n_grid, n_hold=n_hold,
                 hold_days=(sum(hold_bars) / len(hold_bars) / 6) if hold_bars else 0,
                 open_bags=sum(len(bags[c]) for c in coins), peak_bags=peak_bags,
-                years=years, dep_hist=dep_hist, bull_now=bull_now)
+                years=years, dep_hist=dep_hist, bull_now=bull_now,
+                n_bull_bank=n_bull_bank, r_bull_bank=r_bull_bank,
+                hold_loss_n=hold_loss_n, hold_loss_sum=hold_loss_sum)
 
 
 # ── attribution report ────────────────────────────────────────────────────

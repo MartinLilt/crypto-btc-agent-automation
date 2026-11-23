@@ -239,3 +239,18 @@ Plan B, B0 (`plans/2026-11-22 Plan B.md`):
   119.79. Misses: one ETH TP missed by 0.02% (live reads the price 1–2 min after the close) and
   one BNB buy on the step boundary a bar apart, which cascades through BNB's later levels.
   All hold entries/exits and regime switches matched. The simulator is fit for B1/B2.
+
+## 2026-11-23 — Plan B runs: both changes FAIL the pre-registered rules; live unchanged
+
+`python -m backtest.planb run` (live config, €5000 book, 2024-04-29 → 2026-11-23; Δ in pp vs base):
+- **B1, sell bags at TP inside BULL: −4.2 full, −0.6 H1, −2.3 H2, −0.1 H3, better at 0/4 wake-up
+  hours → rejected.** It banks 96 bags for +29 but the grid sleeve drops −83 → −196: left alone,
+  those bags ride the whole BULL and exit after it far above +0.6% (the same "slowness pays"
+  effect as 2026-08-22). The "BULL bag-TP gap" is a feature. Do not change it.
+- **B2, regime only from closed UTC daily candles: +6.3 full, +6.4 H1, −3.3 H2, +0.9 H3, better at
+  4/4 wake-up hours, mdd +1.5pp → FAIL on H2.** Mechanism is real (holds 111 → 53, avg 9 → 20.5
+  days, red exits 76 → 30), but the rule fixed before the run demands both halves. Not shipped.
+  Only way forward is a new item with new rules: report-only shadow mode, forward test.
+- B1+B2: +2.5 / +5.9 / −4.9 / +0.8 → FAIL.
+- On our live period (10-09 → 11-23, ~$120 book) every variant is within $1 of base.
+Simulator: mechanism counters (`n_bull_bank`, `hold_loss_n/sum`) added, regression still exact.
