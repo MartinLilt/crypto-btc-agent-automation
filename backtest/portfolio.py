@@ -100,11 +100,39 @@ def regime_series(closes, ma_win=RG_MA, look=RG_LOOK, flat=RG_FLAT,
     return out
 
 
+def utc_daily(reg, candles):
+    """Plan B2: the regime only changes on a daily candle closed at 00:00 UTC.
+
+    The stride-6 sample ending at the 4h bar that CLOSES at 00:00 UTC (opens
+    20:00) is exactly the series of real UTC daily closes, so the rolling
+    regime at that bar IS the daily-candle regime. Every bar until the next
+    such close keeps it. Before the first daily close: NEUTRAL."""
+    out, cur = [], NEUTRAL
+    for r, k in zip(reg, candles):
+        if k.open_time.hour == 20:
+            cur = r
+        out.append(cur)
+    return out
+
+
 def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
              hold_pct=HOLD_PCT, max_bags=None, start=TOTAL, lo=0, hi=None,
              reg=None, hold_trail=0.0, hold_tp=0.0, hold_tp_frac=0.5,
              max_deploy=1.0, exec_mode="close", tp_pct=None, decide_every=1, phase=0,
-             block_hold=None, block_bag=None, basket=None):
+             block_hold=None, block_bag=None, basket=None,
+             init=None, flows=None, trace=None,
+             bull_bank_bags=False, regime_mode="rolling"):
+    """...
+    init           : start from a real book {cash, bags{c:[{entry,qty,cost}]},
+                     holds{c:{entry,qty,cost,banked}}} instead of all cash
+    flows          : {bar: amount} deposits/withdrawals applied at that bar
+    trace          : list to append (bar, coin, side, kind) for every trade
+    bull_bank_bags : plan B1 — in BULL, still sell bags that reached TP
+                     (no new bags in BULL either way). Live: off.
+    regime_mode    : "rolling" = live today (a 24h window ending at each 4h
+                     bar); "utc_daily" = plan B2, regime only from daily
+                     candles closed at 00:00 UTC, held until the next one.
+    """
     max_bags = P.max_bags if max_bags is None else max_bags
     tp_pct = P.tp_pct if tp_pct is None else tp_pct
     # basket order matters: hold allocations are first-come, so whoever
@@ -121,10 +149,25 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
     n = min(len(closes[c]) for c in coins)
     sma100 = {c: sma_arr(closes[c], P.sma_win) for c in coins}
     reg = reg or {c: regime_series(closes[c]) for c in coins}
+    if regime_mode == "utc_daily":
+        reg = {c: utc_daily(reg[c], data[c]) for c in coins}
+    elif regime_mode != "rolling":
+        raise ValueError(regime_mode)
+
+    def log(i, c, side, kind):
+        if trace is not None:
+            trace.append((i, c, side, kind))
 
     cash = start
     bags = {c: [] for c in coins}
     holds = {c: None for c in coins}
+    if init:
+        cash = init["cash"]
+        for c in coins:
+            bags[c] = [dict(b, i=0) for b in init.get("bags", {}).get(c, [])]
+            h = init.get("holds", {}).get(c)
+            if h:
+                holds[c] = dict(h, i=0, peak=h["entry"], banked=h.get("banked", False))
     # after a trail/TP exit the coin is locked out until it LEAVES bull, else it
     # would just re-buy on the next bar and the trail becomes a churn machine
     locked = {c: False for c in coins}
@@ -149,6 +192,8 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
             peak_eq = max(peak_eq, equity)
             mdd = max(mdd, (peak_eq - equity) / peak_eq)
             continue
+        if flows and i in flows:
+            cash += flows[i]
         invested = sum(b["cost"] for c in coins for b in bags[c]) \
             + sum(h["cost"] for h in holds.values() if h)
         capital_base = cash + invested
@@ -157,6 +202,17 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
         for c in coins:
             price = closes[c][i]
             regime = reg[c][i] if adaptive else NEUTRAL
+
+            if use_hold and regime == BULL and bull_bank_bags and use_grid:
+                keep = []                      # B1: bank TP even while riding
+                for b in bags[c]:
+                    if price >= b["entry"] * (1 + tp_pct / 100):
+                        proceeds = b["qty"] * price * (1 - FEE)
+                        cash += proceeds; r_grid += proceeds - b["cost"]; n_grid += 1
+                        log(i, c, "SELL", "bag")
+                    else:
+                        keep.append(b)
+                bags[c] = keep
 
             if use_hold and regime == BULL:
                 # shadow-flow gate: refuse to START a ride while the move is
@@ -173,12 +229,14 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                         cash += proceeds; r_hold += proceeds - h["cost"] * hold_tp_frac
                         h["qty"] -= q; h["cost"] *= (1 - hold_tp_frac); h["banked"] = True
                         n_hold += 1
+                        log(i, c, "SELL", "hold-part")
                     # trailing stop: leave the ride when it gives back `hold_trail`%
                     if hold_trail and price <= h["peak"] * (1 - hold_trail / 100):
                         proceeds = h["qty"] * price * (1 - FEE)
                         cash += proceeds; r_hold += proceeds - h["cost"]
                         n_hold += 1; hold_bars.append(i - h["i"])
                         holds[c] = None; locked[c] = True
+                        log(i, c, "SELL", "hold")
                 elif not locked[c]:
                     amt = min(hold_pct * capital_base, cash)
                     if amt >= unit:
@@ -186,6 +244,7 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                         holds[c] = {"qty": qty, "cost": amt, "i": i,
                                     "entry": price, "peak": price, "banked": False}
                         cash -= amt
+                        log(i, c, "BUY", "hold")
                 continue                      # BULL: grid frozen
 
             locked[c] = False                 # left BULL — the ride can be re-taken
@@ -195,6 +254,7 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                 proceeds = h["qty"] * price * (1 - FEE)
                 cash += proceeds; r_hold += proceeds - h["cost"]
                 n_hold += 1; hold_bars.append(i - h["i"]); holds[c] = None
+                log(i, c, "SELL", "hold")
 
             if not use_grid:
                 continue
@@ -206,6 +266,7 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                     fill = tp if exec_mode == "high" else price
                     proceeds = b["qty"] * fill * (1 - FEE)
                     cash += proceeds; r_grid += proceeds - b["cost"]; n_grid += 1
+                    log(i, c, "SELL", "bag")
                 else:
                     keep.append(b)
             bags[c] = keep
@@ -223,6 +284,7 @@ def simulate(data, *, use_hold=True, use_grid=True, adaptive=True,
                 qty = (unit - unit * FEE) / price
                 bags[c].append({"entry": price, "qty": qty, "cost": unit, "i": i})
                 cash -= unit
+                log(i, c, "BUY", "bag")
 
         g_val = sum(b["qty"] * closes[c][i] for c in coins for b in bags[c])
         h_val = sum(holds[c]["qty"] * closes[c][i] for c in coins if holds[c])

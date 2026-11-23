@@ -219,3 +219,23 @@ broker/trade modules since c775e9a is empty).
   2026-12-31; ours still trades. Owner to check Binance notices.
 Open: first live cycle 12:00 UTC with the new report; 3 clean cycles; owner confirms the test
 alerts arrived, the DO card auto-charge, and a password-manager copy of the age key.
+
+## 2026-11-23 — Plan A closed; plan B step B0: the simulator replays reality (91%)
+
+Plan A: 5 live cycles with the new report (11-22 12:00 → 11-23 04:00), no errors, no reconcile
+drift, heartbeat updating, first automatic offsite backup 11-23 03:17. First report: equity
+119.51, −7.21 (−5.69%) vs deposits, hold-the-basket 103.00. Only open item: the first real
+deposit/withdrawal booked by the bot itself.
+Plan B, B0 (`plans/2026-11-22 Plan B.md`):
+- `simulate()` gained `init`/`flows`/`trace` and the two plan-B switches (`bull_bank_bags`,
+  `regime_mode="utc_daily"`), both off by default; with them off, 6 configs match the old code
+  bit for bit.
+- **Trap found:** cached candles included the still-forming last bar (2% off its real close).
+  `backtest/planb.closed_only()` now drops unfinished candles; caches re-fetched.
+- `backtest/planb.py`: 4h bars from 1h at wake-up offsets +0..+3h (offset 0 == native 4h,
+  5999/5999 bars).
+- **Calibration** (`backtest/calibrate.py`): live config from the real 2026-10-09 book with the
+  real deposits → 39/43 live trades matched within ±1 bar (34 same bar), equity 120.92 vs live
+  119.79. Misses: one ETH TP missed by 0.02% (live reads the price 1–2 min after the close) and
+  one BNB buy on the step boundary a bar apart, which cascades through BNB's later levels.
+  All hold entries/exits and regime switches matched. The simulator is fit for B1/B2.
