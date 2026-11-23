@@ -254,3 +254,15 @@ Plan B, B0 (`plans/2026-11-22 Plan B.md`):
 - B1+B2: +2.5 / +5.9 / −4.9 / +0.8 → FAIL.
 - On our live period (10-09 → 11-23, ~$120 book) every variant is within $1 of base.
 Simulator: mechanism counters (`n_bull_bank`, `hold_loss_n/sum`) added, regression still exact.
+
+## 2026-11-23 — Plan S deployed (shadow, report only)
+
+- Owner IP rotated again, SSH timed out. Added a wider SSH source to the DO firewall
+  `grid-stream-fw` through the console (real values in `private/ops.md`); old sources kept.
+- `fapi.binance.com` reachable from the box (HTTP 200).
+- Paper cycle of `12b36fa` on a `grid_shadowtest` clone, Telegram and keys blanked, separate
+  STATE_DIR: clean, 4 `shadow_log` rows (all BEAR/BEAR, funding BTC +4%/yr, ETH −6%, BNB 0, SOL −3%;
+  BNB 0 checked against the exchange). Real DB has no `shadow_log` until the first live cycle. Clone dropped.
+- Pulled `12b36fa` onto `/opt/grid-stream` between cycles. Next: 3 clean live cycles from 16:00 UTC,
+  then save the start book to `private/shadow_start_book.json`.
+- Local Docker Desktop stopped (only used for the restore drill).
